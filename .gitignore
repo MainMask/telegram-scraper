@@ -2,6 +2,7 @@
 *.session
 *.session-journal
 output/
+data/
 __pycache__/
 *.egg-info/
 .venv/

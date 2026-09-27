@@ -222,6 +222,8 @@ def channel_slug(channel: str) -> str:
     for prefix in ("https://", "http://"):
         if s.startswith(prefix):
             s = s[len(prefix):]
+    if s.startswith("www."):
+        s = s[len("www."):]
     for prefix in ("t.me/", "telegram.me/", "telegram.dog/"):
         if s.startswith(prefix):
             s = s[len(prefix):]
@@ -253,12 +255,9 @@ def _channel_ref(raw: str) -> _ChannelRef:
         short = utils.resolve_id(cid)[0] if cid < 0 else cid  # -100… marker -> bare id
         return _ChannelRef(cid, f"c{short}", f"https://t.me/c/{short}")
     name = channel_slug(s)
-    if "/s/" in s:                 # Telethon can't parse a t.me/s/<name> preview link
-        arg = f"@{name}"
-    elif name.startswith("+"):     # an invite resolves only as a t.me/+<hash> URL
-        arg = f"https://t.me/{name}"
-    else:
-        arg = raw
+    # an invite resolves only as a t.me/+<hash> URL; anything else goes as "@name", since
+    # Telethon can't parse a t.me/s/<name> preview, a post link or a URL with a query
+    arg = f"https://t.me/{name}" if name.startswith("+") else f"@{name}"
     return _ChannelRef(arg, name, f"https://t.me/{name}")
 
 
@@ -738,8 +737,9 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                 partial = partial_dir / f"{ref.slug}_until_{t_index:05}"
                 # only this channel's new shards (after a --resume the first one also
                 # repeats the earlier channels' checkpointed posts; combine drops them)
+                # always parquet, whatever --format: `combine` reads only parquet
                 save_table(_read_shards(ckpt_dir, "posts", start=snapshot_from),
-                           partial, params.fmt)
+                           partial, "parquet")
                 snapshot_from = shard_index
             except (*NET_ERRORS, FloodWaitError, *RETRYABLE_RPC):  # bubble to the Ctrl-C/finally scope and out to run()
                 raise

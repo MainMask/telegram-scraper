@@ -181,7 +181,7 @@ collected):
   Skipped with a note when there is nothing to build.
 - `<name>_reactors_<from>-<to>.<ext>` — unless `--no-reactors`; one row per *(user, message, reaction)*:
   `Type, Target, Group, Message ID, Post ID, Url, Reactor ID, Reactor Username, Reactor Access Hash, Reactor Name, Reaction, Date`
-- `<name>_partial/` — `<slug>_until_NNNNN` snapshots written after each channel
+- `<name>_partial/` — `<slug>_until_NNNNN.parquet` snapshots (always parquet) written after each channel
   (post-shaped, so `combine --input <name>_partial` merges just these; a fresh run
   without `--resume` deletes the previous run's snapshots first). The resume
   machinery lives in `<name>_partial/checkpoint/` — append-only

@@ -76,6 +76,7 @@ def test_count_comments_from_json_string():
         ("t.me/durov/123?comment=1", "durov"),
         ("https://t.me/+AbCdEf", "+AbCdEf"),
         ("  https://telegram.me/durov  ", "durov"),
+        ("https://www.t.me/durov", "durov"),
         ("https://t.me/s/durov", "durov"),               # web preview
         ("https://t.me/joinchat/AbC", "+AbC"),           # legacy invite = t.me/+AbC
     ],
@@ -88,7 +89,9 @@ def test_channel_slug(raw, expected):
     "raw,arg,slug,url_base",
     [
         ("@durov", "@durov", "durov", "https://t.me/durov"),
-        ("https://t.me/durov/9", "https://t.me/durov/9", "durov", "https://t.me/durov"),
+        ("https://t.me/durov/9", "@durov", "durov", "https://t.me/durov"),  # Telethon can't parse a post link
+        ("https://t.me/durov?x=1", "@durov", "durov", "https://t.me/durov"),
+        ("www.t.me/durov", "@durov", "durov", "https://t.me/durov"),
         ("-1001629147115", -1001629147115, "c1629147115", "https://t.me/c/1629147115"),
         ("1629147115", 1629147115, "c1629147115", "https://t.me/c/1629147115"),
         ("https://t.me/s/durov", "@durov", "durov", "https://t.me/durov"),
@@ -294,6 +297,23 @@ def test_filter_repeated_keyword_counts_once(tmp_path):
     assert out["Keyword_Count"].tolist() == [1]
 
 
+def test_filter_keeps_dotted_output_name(tmp_path):
+    pd.DataFrame({"Content": ["foo"]}).to_parquet(tmp_path / "in.parquet")
+    filter_keywords(str(tmp_path / "in.parquet"), str(tmp_path / "kw_01.01.2024"), "Content", ["foo"], 10)
+    assert (tmp_path / "kw_01.01.2024_unique.xlsx").exists()
+
+
+def test_filter_drops_data_extension_from_output(tmp_path):
+    pd.DataFrame({"Content": ["foo"]}).to_parquet(tmp_path / "in.parquet")
+    filter_keywords(str(tmp_path / "in.parquet"), str(tmp_path / "kw.parquet"), "Content", ["foo"], 10)
+    assert (tmp_path / "kw_unique.xlsx").exists()
+
+
+def test_save_table_excel_strips_control_chars(tmp_path):
+    out = save_table(pd.DataFrame({"Comment Content": ["a\x0bb", None]}), tmp_path / "x", "excel")
+    assert read_table(out)["Comment Content"].tolist()[0] == "ab"
+
+
 def test_save_table_creates_parent_dir(tmp_path):
     path = save_table(pd.DataFrame({"a": [1]}), tmp_path / "new" / "x", "parquet")
     assert path == tmp_path / "new" / "x.parquet" and path.exists()
@@ -318,6 +338,12 @@ def test_sample_larger_than_data_returns_all_rows(tmp_path, capsys):
     out = read_table(tmp_path / "s.xlsx")
     assert sorted(out["id"]) == list(range(50))  # every source row exactly once
     assert f"Saved: {tmp_path / 's.xlsx'} (50 rows)" in capsys.readouterr().out
+
+
+def test_sample_nothing_left_after_min_length(tmp_path):
+    pd.DataFrame({"Content": ["short"], "Group": ["@a"]}).to_parquet(tmp_path / "in.parquet")
+    with pytest.raises(SystemExit, match="min-length"):
+        sample(str(tmp_path / "in.parquet"), str(tmp_path / "s"), "Content", "Group", 10, 20)
 
 
 def test_participants_skips_excel_truncated_comments_list(tmp_path, capsys):
@@ -404,3 +430,31 @@ def test_links_and_filter_handle_empty_content_after_xlsx(tmp_path):
         {"Telegram Link": "https://t.me/foo", "Frequency": 1}]
     filter_keywords(src, str(tmp_path / "f"), "Content", ["foo"], 10)
     assert len(pd.read_excel(tmp_path / "f_unique.xlsx")) == 1
+
+
+@pytest.fixture
+def _no_telegram(monkeypatch):
+    import telescraper.config, telescraper.scrape, telescraper.verify
+
+    def _must_not_run(*a, **k):
+        raise AssertionError("reached Telegram despite bad dates")
+    monkeypatch.setattr(telescraper.config, "load_credentials", lambda: None)
+    monkeypatch.setattr(telescraper.scrape, "run", _must_not_run)
+    monkeypatch.setattr(telescraper.verify, "run", _must_not_run)
+
+
+@pytest.mark.parametrize("cmd", [["scrape", "--channels", "@a", "--name", "x"],
+                                 ["verify", "--input", "p.parquet", "--channel", "@a"]])
+def test_cli_rejects_date_min_after_date_max(_no_telegram, cmd):
+    from telescraper.cli import main
+
+    with pytest.raises(SystemExit, match="is after"):
+        main([*cmd, "--date-min", "02.01.2024", "--date-max", "01.01.2024"])
+
+
+def test_date_range_allows_a_single_day():
+    import argparse
+    from telescraper.cli import _date_range
+
+    lo, hi = _date_range(argparse.Namespace(date_min="01.01.2024", date_max="01.01.2024"))
+    assert (lo.hour, hi.hour) == (0, 23)

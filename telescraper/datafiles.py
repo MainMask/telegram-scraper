@@ -69,6 +69,8 @@ def save_table(df: pd.DataFrame, path: str | Path, fmt: str | None = None) -> Pa
         _warn_if_excel_would_truncate(df)
         # Excel keeps 15 significant digits; a 19-digit access hash survives only as text
         df = df.assign(**{c: df[c].astype("string") for c in df.columns if _is_hash_column(c)})
+        # openpyxl refuses control characters (e.g. in comment text or names)
+        df = df.map(lambda v: _INVALID_XML_CHARS.sub("", v) if isinstance(v, str) else v)
         df.to_excel(path, index=False, engine="openpyxl")
     elif ext == "parquet":
         df.to_parquet(path, index=False)

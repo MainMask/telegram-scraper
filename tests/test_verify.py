@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import pytest
-from telethon.errors import FloodWaitError
+from telethon.errors import ChannelPrivateError, FloodWaitError
 
 import telescraper.verify as verify
 from telescraper.cli import build_parser, cmd_verify
@@ -223,6 +223,16 @@ def test_verify_unresolvable_channel_exits_cleanly(tmp_path, monkeypatch):
 
     monkeypatch.setattr(verify, "TelegramClient", UnknownChannelClient)
     with pytest.raises(SystemExit, match="-100123: Cannot find any entity"):
+        verify.run(Credentials(1, "h"), _params(tmp_path, REAL_IN_WINDOW))
+
+
+def test_verify_private_channel_exits_cleanly(tmp_path, monkeypatch):
+    class PrivateChannelClient(FakeVerifyClient):
+        async def get_entity(self, arg):
+            raise ChannelPrivateError(request=None)
+
+    monkeypatch.setattr(verify, "TelegramClient", PrivateChannelClient)
+    with pytest.raises(SystemExit, match="-100123: "):
         verify.run(Credentials(1, "h"), _params(tmp_path, REAL_IN_WINDOW))
 
 

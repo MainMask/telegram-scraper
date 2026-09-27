@@ -33,14 +33,24 @@ def _read_channels(args) -> list[str]:
     return channels
 
 
+def _date_range(args) -> tuple:
+    from telescraper.scrape import parse_date
+
+    date_min, date_max = parse_date(args.date_min), parse_date(args.date_max, end_of_day=True)
+    if date_min > date_max:
+        raise SystemExit(f"--date-min {args.date_min} is after --date-max {args.date_max}.")
+    return date_min, date_max
+
+
 def cmd_scrape(args) -> None:
     from telescraper.config import load_credentials
-    from telescraper.scrape import ScrapeParams, parse_date, run
+    from telescraper.scrape import ScrapeParams, run
 
+    date_min, date_max = _date_range(args)
     params = ScrapeParams(
         channels=_read_channels(args),
-        date_min=parse_date(args.date_min),
-        date_max=parse_date(args.date_max, end_of_day=True),
+        date_min=date_min,
+        date_max=date_max,
         name=args.name,
         keyword=args.keyword,
         max_messages=args.max_messages,
@@ -128,14 +138,14 @@ def cmd_links(args) -> None:
 
 def cmd_verify(args) -> None:
     from telescraper.config import load_credentials
-    from telescraper.scrape import parse_date
     from telescraper.verify import VerifyParams, run
 
+    date_min, date_max = _date_range(args)  # before load_credentials: a typo needs no .env
     run(load_credentials(), VerifyParams(
         input=args.input,
         channel=args.channel,
-        date_min=parse_date(args.date_min),
-        date_max=parse_date(args.date_max, end_of_day=True),
+        date_min=date_min,
+        date_max=date_max,
         session=args.session,
         output=args.output or "",
         comment_sample=args.comment_sample,

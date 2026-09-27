@@ -289,6 +289,8 @@ def sample(input_path: str, output: str, text_col: str, category_col: str, sampl
     df = read_table(input_path)
     _require_columns(df, [text_col, category_col], input_path)
     df = df[df[text_col].str.len() > min_length].copy()
+    if df.empty:
+        raise SystemExit(f"{input_path}: no rows with '{text_col}' longer than --min-length {min_length}.")
     df[text_col] = df[text_col].apply(lambda t: _URL_RE.sub("", str(t)))
     if "Comments List" in df.columns:
         df["Comments List"] = df["Comments List"].apply(_parse_comments_list)
@@ -312,13 +314,16 @@ def filter_keywords(input_path: str, output: str, content_col: str, keywords: li
     filtered = df[df["Keyword_Count"] > 0]
     print(f"Matched rows: {len(filtered)}")
 
+    base = Path(output)
+    if base.suffix.lower() in (".parquet", ".xlsx", ".csv"):  # a data extension only: Path("kw_01.01.2024").suffix is ".2024"
+        base = base.with_suffix("")
     num_files = max(1, int(np.ceil(len(filtered) / max_rows_per_file)))
     for i in range(num_files):
         chunk = filtered.iloc[i * max_rows_per_file:(i + 1) * max_rows_per_file]
         if chunk.empty:
             continue
         suffix = "unique" if num_files == 1 else f"part_{i + 1}"
-        path = save_table(chunk, f"{Path(output).with_suffix('')}_{suffix}", "excel")
+        path = save_table(chunk, f"{base}_{suffix}", "excel")
         print(f"Saved: {path}")
 
 

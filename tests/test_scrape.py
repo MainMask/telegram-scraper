@@ -704,6 +704,9 @@ def test_checkpoint_is_parquet_even_for_excel(fake_client, tmp_path):
     d = _ckpt(tmp_path)
     assert list(d.glob("posts_part_*.parquet"))
     assert not list(d.glob("*.xlsx"))
+    # the _until_ snapshots too, so `combine --input <name>_partial` can read them
+    assert list(d.parent.glob("*_until_*.parquet"))
+    assert not list(d.parent.glob("*_until_*.xlsx"))
 
 
 def test_checkpoint_writes_incremental_shards(fake_client, tmp_path, monkeypatch):

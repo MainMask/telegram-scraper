@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError
+from telethon.errors import ChannelPrivateError, FloodWaitError
 from telethon.tl.types import MessageService
 
 from telescraper.analysis import _count_comments
@@ -132,7 +132,7 @@ async def _verify(creds: Credentials, params: VerifyParams):
         await _warm_channel(client, ref, dialogs_loaded=False)
         try:
             entity = await client.get_entity(ref.arg)
-        except ValueError as exc:  # unknown username, or a chat this account is not in
+        except (ValueError, ChannelPrivateError) as exc:  # unknown username, or a chat this account is not in
             raise SystemExit(f"{params.channel}: {exc}")
         newest = await client.get_messages(entity, limit=1)
         oldest = await client.get_messages(entity, limit=1, reverse=True)

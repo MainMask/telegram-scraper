@@ -69,6 +69,9 @@ def save_table(df: pd.DataFrame, path: str | Path, fmt: str | None = None) -> Pa
         _warn_if_excel_would_truncate(df)
         # Excel keeps 15 significant digits; a 19-digit access hash survives only as text
         df = df.assign(**{c: df[c].astype("string") for c in df.columns if _is_hash_column(c)})
+        # Excel has no time zones: store aware datetimes as naive UTC
+        df = df.assign(**{c: df[c].dt.tz_convert(None) for c in df.columns
+                          if isinstance(df[c].dtype, pd.DatetimeTZDtype)})
         # openpyxl refuses control characters (e.g. in comment text or names)
         df = df.map(lambda v: _INVALID_XML_CHARS.sub("", v) if isinstance(v, str) else v)
         df.to_excel(path, index=False, engine="openpyxl")

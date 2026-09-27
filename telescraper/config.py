@@ -44,6 +44,12 @@ def load_credentials() -> Credentials:
     )
 
 
+def start_kwargs(creds: Credentials) -> dict:
+    """phone/password for client.start(); unset ones are left to Telethon's prompts
+    (an explicit None makes start() raise instead of asking)."""
+    return {k: v for k, v in (("phone", creds.phone), ("password", creds.password)) if v}
+
+
 def session_for(creds: Credentials, session: str) -> StringSession | str:
     """TG_SESSION_STRING wins over the session file when it is set."""
     if not creds.session_string:

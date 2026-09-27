@@ -16,7 +16,7 @@ from telethon.errors import ChannelPrivateError, FloodWaitError
 from telethon.tl.types import MessageService
 
 from telescraper.analysis import _count_comments
-from telescraper.config import Credentials, session_for
+from telescraper.config import Credentials, session_for, start_kwargs
 from telescraper.datafiles import read_table, resolve_inputs, save_table
 from telescraper.scrape import (
     CLIENT_KWARGS,
@@ -124,7 +124,7 @@ async def _verify(creds: Credentials, params: VerifyParams):
 
     client = TelegramClient(session_for(creds, params.session), creds.api_id, creds.api_hash,
                             **CLIENT_KWARGS)
-    await client.start(phone=creds.phone, password=creds.password)
+    await client.start(**start_kwargs(creds))
 
     flagged = []          # (id, date, reason)
     short_threads = []

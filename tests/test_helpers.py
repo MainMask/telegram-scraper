@@ -92,8 +92,12 @@ def test_channel_slug(raw, expected):
         ("https://t.me/durov/9", "@durov", "durov", "https://t.me/durov"),  # Telethon can't parse a post link
         ("https://t.me/durov?x=1", "@durov", "durov", "https://t.me/durov"),
         ("www.t.me/durov", "@durov", "durov", "https://t.me/durov"),
+        ("HTTPS://WWW.T.me/Durov", "@Durov", "Durov", "https://t.me/Durov"),  # only the prefix ignores case
+        ("Telegram.Me/durov", "@durov", "durov", "https://t.me/durov"),
+        ("T.ME/c/1629147115/5", -1001629147115, "c1629147115", "https://t.me/c/1629147115"),
+        ("https://T.me/+AbC", "https://t.me/+AbC", "+AbC", "https://t.me/+AbC"),
         ("-1001629147115", -1001629147115, "c1629147115", "https://t.me/c/1629147115"),
-        ("1629147115", 1629147115, "c1629147115", "https://t.me/c/1629147115"),
+        ("1629147115", -1001629147115, "c1629147115", "https://t.me/c/1629147115"),
         ("https://t.me/c/1629147115/5", -1001629147115, "c1629147115", "https://t.me/c/1629147115"),
         ("t.me/c/1629147115", -1001629147115, "c1629147115", "https://t.me/c/1629147115"),
         ("telegram.me/c/1629147115/5", -1001629147115, "c1629147115", "https://t.me/c/1629147115"),
@@ -115,6 +119,13 @@ def test_save_table_keeps_dotted_name(tmp_path):
     assert read_table(out)["a"].tolist() == [1]
 
 
+def test_save_table_excel_takes_aware_dates(tmp_path):
+    # e.g. `verify --output` dates, converted with `read --to excel`
+    df = pd.DataFrame({"Date": [datetime(2024, 1, 1, 10, tzinfo=timezone.utc)]})
+    out = save_table(df, tmp_path / "missed", "excel")
+    assert read_table(out)["Date"].tolist() == [pd.Timestamp("2024-01-01 10:00")]  # naive UTC
+
+
 def test_save_table_warns_when_excel_would_truncate(tmp_path, capsys):
     save_table(pd.DataFrame({"a": ["short"]}), tmp_path / "ok", "excel")
     assert "WARNING" not in capsys.readouterr().out
@@ -129,6 +140,28 @@ def test_combine_errors_on_empty_inputs(tmp_path):
     pd.DataFrame().to_parquet(tmp_path / "empty.parquet")
     with pytest.raises(SystemExit):
         combine(str(tmp_path / "*.parquet"), str(tmp_path / "out.parquet"), ["Group", "Message ID"])
+
+
+def test_combine_folder_skips_non_post_files(tmp_path, capsys):
+    # scrape and verify leave these next to the posts in output/
+    pd.DataFrame([{"Group": "@a", "Message ID": "5", "Date": "2024-01-05 00:00:00",
+                   "Comments List": "[]"}]).to_parquet(tmp_path / "T_posts.parquet")
+    pd.DataFrame([{"Group": "@a", "Message ID": 77, "Reactor ID": 8,
+                   "Date": "2024-01-05 01:00:00"}]).to_parquet(tmp_path / "T_reactors.parquet")
+    pd.DataFrame([{"ID": 8, "Total": 1}]).to_parquet(tmp_path / "T_participants.parquet")
+    pd.DataFrame([{"Message ID": 6, "Date": datetime(2024, 1, 6, tzinfo=timezone.utc)}]
+                 ).to_parquet(tmp_path / "T_missed.parquet")
+    out = tmp_path / "out" / "u.parquet"
+    combine(str(tmp_path), str(out), ["Group", "Message ID"])
+    assert read_table(out)["Message ID"].tolist() == ["5"]
+    assert capsys.readouterr().out.count("not a posts file") == 3
+
+
+def test_combine_only_non_post_files_says_so(tmp_path):
+    pd.DataFrame([{"ID": 8, "Total": 1}]).to_parquet(tmp_path / "T_participants.parquet")
+    with pytest.raises(SystemExit, match="No non-empty posts files"):
+        combine(str(tmp_path / "T_participants.parquet"), str(tmp_path / "u.parquet"),
+                ["Group", "Message ID"])
 
 
 def _posts_with_comments(tmp_path, name="posts.parquet"):

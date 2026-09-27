@@ -719,20 +719,6 @@ def test_checkpoint_writes_incremental_shards(fake_client, tmp_path, monkeypatch
     assert sorted(pd.read_parquet(snap)["Message ID"].astype(str)) == ["20", "30"]
 
 
-def test_resume_migrates_legacy_checkpoint(monkeypatch, tmp_path):
-    monkeypatch.setattr(scrape, "TelegramClient", ResumeClient)
-    d = _ckpt(tmp_path)
-    d.mkdir(parents=True)
-    pd.DataFrame([_CK_ROW_30, _CK_ROW_20]).to_parquet(d / "posts.parquet")  # pre-shard layout
-    (d / "resume.json").write_text(json.dumps(
-        _resume_meta(tmp_path, last_id=20, t_index=2)), encoding="utf-8")
-
-    path = scrape.run(Credentials(1, "h"), _params(tmp_path, resume=True))
-
-    assert ResumeClient.calls[0][1] == 20                       # cursor honoured
-    assert list(pd.read_parquet(path)["Message ID"]) == ["30", "20", "15"]  # legacy rows kept
-
-
 def test_fresh_run_clears_stale_shards(fake_client, tmp_path):
     d = _ckpt(tmp_path)
     d.mkdir(parents=True)
@@ -831,26 +817,6 @@ def test_collect_reactors_user_and_channel_with_same_id(monkeypatch):
     assert (user["Reactor Username"], user["Reactor Name"], user["Reactor Access Hash"]) == (
         "bob", "Bob", _BOB_HASH)                        # not overwritten by channel 5
     assert chan["Reactor Name"] == "Chan"
-
-
-def test_consolidate_reactors_mixes_shards_from_before_access_hash(tmp_path):
-    d = tmp_path / "ckpt"
-    d.mkdir()
-    # a new shard: the hash column sits right after Reactor Username, as _collect_reactors writes it
-    new = pd.DataFrame([_reactor_row(1, 7, "🔥")])
-    new.insert(new.columns.get_loc("Reactor Username") + 1, "Reactor Access Hash",
-               pd.array([_BOB_HASH], dtype="Int64"))
-    pd.DataFrame([_reactor_row(2, 8, "👍")]).to_parquet(d / "reactors_part_00000.parquet")  # old
-    new.to_parquet(d / "reactors_part_00001.parquet")
-    pd.DataFrame([_reactor_row(3, 9, "❤")]).to_parquet(d / "reactors_part_00002.parquet")  # old
-
-    dest, n = scrape._consolidate_reactors(d, tmp_path / "r.parquet")
-    r = pd.read_parquet(dest).set_index("Message ID")
-    assert n == 3
-    assert r.loc[1, "Reactor Access Hash"] == _BOB_HASH
-    assert r.loc[[2, 3], "Reactor Access Hash"].isna().all()
-    # excel path: pandas concat of the same shards keeps the exact Int64 column
-    assert str(scrape._read_shards(d, "reactors")["Reactor Access Hash"].dtype) == "Int64"
 
 
 def test_consolidate_reactors_streaming(tmp_path):

@@ -5,7 +5,7 @@ from telethon.crypto import AuthKey
 from telethon.sessions import StringSession
 
 from telescraper import config
-from telescraper.config import Credentials, load_credentials, session_for
+from telescraper.config import Credentials, load_credentials, session_for, start_kwargs
 
 
 def test_load_credentials_reads_session_string(monkeypatch):
@@ -66,3 +66,20 @@ def test_load_credentials_reads_dotenv_from_cwd(monkeypatch, tmp_path):
     (tmp_path / ".env").write_text("TG_API_ID=42\nTG_API_HASH=abc\n")
     monkeypatch.chdir(tmp_path)
     assert load_credentials().api_id == 42  # not the .env next to the package
+
+
+def test_start_kwargs_leaves_unset_phone_and_password_to_telethon():
+    import asyncio
+
+    from telethon import TelegramClient
+
+    assert start_kwargs(Credentials(1, "h")) == {}
+    assert start_kwargs(Credentials(1, "h", phone="+1", password="p")) == {"phone": "+1", "password": "p"}
+
+    async def check():  # inside a running loop start() only builds the coroutine: no network
+        client = TelegramClient(StringSession(), 1, "h")
+        with pytest.raises(ValueError, match="No phone number"):  # what we used to pass
+            client.start(phone=None, password=None)
+        client.start(**start_kwargs(Credentials(1, "h"))).close()  # falls back to its prompts
+
+    asyncio.run(check())

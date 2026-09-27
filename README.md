@@ -130,7 +130,7 @@ reduced to `name`, and the `Group` column is stored normalised as `@name`. A web
 `t.me/joinchat/hash`) works for a chat the account is already in; its `Group` is `@+hash`.
 
 It may also be a **numeric ID** such as `-1001629147115` (the form Telegram clients and
-`t.me/c/1629147115/…` links use; such a link is accepted too) — handy for private channels
+`t.me/c/1629147115/…` links use; such a link, or the bare `1629147115`, is accepted too) — handy for private channels
 that have no username. The
 logged-in account must already be a member of that channel (or have it in its dialogs) for
 the ID to resolve. For an ID-only channel the `Group` column and file names use
@@ -190,9 +190,7 @@ collected):
   whatever `--format` is) plus a `resume.json` cursor, written every 150 posts
   and on every reconnect. Each checkpoint only writes the batch since the previous
   one, so its cost and `--resume`'s memory stay flat no matter how much has been
-  scraped. A pre-shard `posts.parquet` / `reactors.parquet` from an older run is
-  migrated to a shard automatically on `--resume`. The whole `checkpoint/` folder is
-  removed on a clean finish.
+  scraped. The whole `checkpoint/` folder is removed on a clean finish.
 
 Re-running overwrites the previous `<name>_posts` / `<name>_participants` /
 `<name>_reactors` only when the post-date span comes out identical; a different span
@@ -224,6 +222,9 @@ telescraper sample   --input output/unified.parquet --output output/sample.xlsx 
 telescraper links    --input output/unified.parquet --output output/links.xlsx
 telescraper read     output/unified.parquet --head 20 --to xlsx
 ```
+
+`combine --input` also takes a folder: the `_reactors` / `_participants` / `verify` files
+that sit next to the posts there are skipped (listed as `skipped … not a posts file`).
 
 The `Comments List` column holds comments as a JSON string — `telescraper comments`
 explodes it into a flat table (one row per comment, with `Comment Author ID` /

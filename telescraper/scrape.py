@@ -18,7 +18,7 @@ from telethon.errors import ChannelPrivateError, FloodWaitError, ServerError, Ti
 from telethon.tl.functions.messages import GetMessageReactionsListRequest
 from telethon.tl.types import PeerChannel, PeerUser, User
 
-from telescraper.config import Credentials, session_for
+from telescraper.config import Credentials, session_for, start_kwargs
 from telescraper.datafiles import clean_xml_text, format_duration, save_table
 
 SEP = "-" * 80
@@ -141,9 +141,6 @@ def _consolidate_reactors(ckpt_dir: Path, dest: Path) -> tuple[Path, int]:
     try:
         for p in _shard_paths(ckpt_dir, "reactors"):
             part = pd.read_parquet(p).drop_duplicates(subset=REACTOR_DEDUP_KEY)
-            if "Reactor Access Hash" not in part.columns:  # shard from before the column
-                part.insert(part.columns.get_loc("Reactor Username") + 1, "Reactor Access Hash",
-                            pd.array([None] * len(part), dtype="Int64"))
             msg_keys = list(zip(part["Group"].astype(str), part["Target"], part["Message ID"]))
             fresh = [k not in seen for k in msg_keys]
             part = part[fresh]
@@ -175,16 +172,6 @@ def _next_shard_index(ckpt_dir: Path) -> int:
             for base in ("posts", "reactors")
             for p in _shard_paths(ckpt_dir, base)]
     return max(idxs) + 1 if idxs else 0
-
-
-def _migrate_legacy_checkpoint(ckpt_dir: Path) -> None:
-    """A pre-shard checkpoint kept a single overwriting `posts.parquet` /
-    `reactors.parquet`. Promote each to shard 0 so `--resume` keeps that data
-    without ever loading it."""
-    for base in ("posts", "reactors"):
-        legacy = ckpt_dir / f"{base}.parquet"
-        if legacy.exists() and not _shard_paths(ckpt_dir, base):
-            legacy.rename(ckpt_dir / f"{base}_part_00000.parquet")
 
 
 def _clear_checkpoint(ckpt_dir: Path) -> None:
@@ -220,13 +207,13 @@ class ScrapeParams:
 def channel_slug(channel: str) -> str:
     """Reduce '@name', 't.me/name', 'https://t.me/name/123?x=1' etc. to a bare 'name'."""
     s = channel.strip()
-    for prefix in ("https://", "http://"):
-        if s.startswith(prefix):
+    for prefix in ("https://", "http://"):  # scheme and domain ignore case; the name keeps it
+        if s.lower().startswith(prefix):
             s = s[len(prefix):]
-    if s.startswith("www."):
+    if s.lower().startswith("www."):
         s = s[len("www."):]
     for prefix in ("t.me/", "telegram.me/", "telegram.dog/"):
-        if s.startswith(prefix):
+        if s.lower().startswith(prefix):
             s = s[len(prefix):]
     if s.startswith("s/"):  # web preview of the channel
         s = s[len("s/"):]
@@ -250,13 +237,14 @@ def _channel_ref(raw: str) -> _ChannelRef:
     address it and how we render it. Numeric IDs (e.g. '-1001629147115', as shown
     by Telegram clients) become `t.me/c/<short_id>` links and a 'c<short_id>' slug."""
     s = raw.strip()
-    m = re.match(r"(?:https?://)?(?:www\.)?(?:t\.me|telegram\.(?:me|dog))/c/(\d+)", s)
+    m = re.match(r"(?i:(?:https?://)?(?:www\.)?(?:t\.me|telegram\.(?:me|dog)))/c/(\d+)", s)
     if m:  # a private-channel link: the same channel as its -100<id> numeric ID
         s = f"-100{m[1]}"
-    body = s[1:] if s.startswith("-") else s
-    if body.isdigit():
+    elif s.isdigit():  # a bare short id, as in t.me/c/<id>: the same channel as -100<id>
+        s = f"-100{s}"
+    if s.startswith("-") and s[1:].isdigit():
         cid = int(s)
-        short = utils.resolve_id(cid)[0] if cid < 0 else cid  # -100… marker -> bare id
+        short = utils.resolve_id(cid)[0]  # -100… marker -> bare id
         return _ChannelRef(cid, f"c{short}", f"https://t.me/c/{short}")
     name = channel_slug(s)
     # an invite resolves only as a t.me/+<hash> URL; anything else goes as "@name", since
@@ -579,7 +567,6 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
             raise SystemExit("--resume: resume.json does not match the current "
                              "arguments (channels / keyword / dates). Re-run with "
                              "the same command as the interrupted job.")
-        _migrate_legacy_checkpoint(ckpt_dir)
         if not _shard_paths(ckpt_dir, "posts") and int(meta.get("t_index", 0)) > 0:
             raise SystemExit(f"--resume: checkpoint shards are missing from {ckpt_dir} "
                              f"but resume.json reports {meta['t_index']} scraped posts "
@@ -598,7 +585,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
 
     client = TelegramClient(session_for(creds, params.session), creds.api_id, creds.api_hash,
                             **CLIENT_KWARGS)
-    await client.start(phone=creds.phone, password=creds.password)
+    await client.start(**start_kwargs(creds))
 
     i, last_id = resume_channel_index, resume_last_id  # for the Ctrl-C handler below
     snapshot_from = 0  # first shard index not yet written to an `_until_` snapshot

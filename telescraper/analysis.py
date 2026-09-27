@@ -85,10 +85,15 @@ def combine(inputs: str, output: str, dedup_cols: list[str]) -> None:
     frames = []
     for p in tqdm(paths, desc="Reading files"):
         df = pd.read_parquet(p)
-        if not df.empty and not df.isna().all().all():
-            frames.append(df)
+        if df.empty or df.isna().all().all():
+            continue
+        # a folder input also holds the run's _reactors / _participants / verify files
+        if "Reactor ID" in df.columns or not {*dedup_cols, "Date"} <= set(df.columns):
+            print(f"  - skipped {p.name}: not a posts file")
+            continue
+        frames.append(df)
     if not frames:
-        raise SystemExit(f"No non-empty parquet files found in: {inputs}")
+        raise SystemExit(f"No non-empty posts files found in: {inputs}")
     combined = normalize_posts(pd.concat(frames, ignore_index=True), dedup_cols, source=inputs)
 
     n_comments = int(combined["Comments"].sum())
@@ -121,8 +126,6 @@ def _comment_pairs(df: pd.DataFrame):
                 print(f"  ! {post.get('Group')}/{post.get('Message ID')}: Comments List is not valid "
                       f"JSON (e.g. truncated by Excel's 32k limit) - skipped; use --format parquet")
                 items = []
-        elif isinstance(raw, list):
-            items = raw
         else:
             items = []
         for c in items:

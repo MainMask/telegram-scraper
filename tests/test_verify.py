@@ -180,6 +180,31 @@ def test_verify_rejects_reactors_file(tmp_path):
             date_max=datetime(2024, 12, 31, tzinfo=timezone.utc)))
 
 
+def test_verify_folder_skips_reactors_file(tmp_path, capsys):
+    # scrape's output folder holds the _reactors file next to the posts
+    pd.DataFrame({"Message ID": REAL_IN_WINDOW, "Group": "@a"}).to_parquet(tmp_path / "T_posts.parquet")
+    pd.DataFrame({"Group": ["@a"], "Message ID": [90], "Reactor ID": [99]}
+                 ).to_parquet(tmp_path / "T_reactors.parquet")
+    verify.run(Credentials(1, "h"), VerifyParams(
+        input=str(tmp_path), channel="@a",
+        date_min=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        date_max=datetime(2024, 12, 31, 23, 59, 59, tzinfo=timezone.utc)))
+    out = capsys.readouterr().out
+    assert "skipped T_reactors.parquet: not a posts file" in out
+    assert "RESULT: 0 posts missed" in out
+
+
+def test_verify_folder_with_missed_file_lists_groups(tmp_path):
+    # a previous verify's _missed file has no Group column
+    pd.DataFrame({"Message ID": [100], "Group": "@a"}).to_parquet(tmp_path / "T_posts.parquet")
+    pd.DataFrame({"Message ID": [98], "Reason": ["missed"]}).to_parquet(tmp_path / "T_missed.parquet")
+    with pytest.raises(SystemExit, match=r"@zzz.*\['@a'\]"):
+        verify.run(Credentials(1, "h"), VerifyParams(
+            input=str(tmp_path), channel="@zzz",
+            date_min=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            date_max=datetime(2024, 12, 31, tzinfo=timezone.utc)))
+
+
 def test_verify_handles_flood(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(verify, "TelegramClient", FloodVerifyClient)
     with pytest.raises(SystemExit):

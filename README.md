@@ -128,6 +128,7 @@ A channel may be given as `@name`, `t.me/name` or a full `https://t.me/name` URL
 reduced to `name`, and the `Group` column is stored normalised as `@name`. A web-preview link
 `t.me/s/name` means the same `name`. An invite link `t.me/+hash` (or the older
 `t.me/joinchat/hash`) works for a chat the account is already in; its `Group` is `@+hash`.
+For a channel or supergroup, its message links are `https://t.me/c/<id>/…`, as for a numeric ID.
 
 It may also be a **numeric ID** such as `-1001629147115` (the form Telegram clients and
 `t.me/c/1629147115/…` links use; such a link, or the bare `1629147115`, is accepted too) — handy for private channels
@@ -190,7 +191,7 @@ collected):
   whatever `--format` is) plus a `resume.json` cursor, written every 150 posts
   and on every reconnect. Each checkpoint only writes the batch since the previous
   one, so its cost and `--resume`'s memory stay flat no matter how much has been
-  scraped. The whole `checkpoint/` folder is removed on a clean finish.
+  scraped. The `checkpoint/` folder is emptied on a clean finish.
 
 Re-running overwrites the previous `<name>_posts` / `<name>_participants` /
 `<name>_reactors` only when the post-date span comes out identical; a different span
@@ -297,7 +298,8 @@ pip install pytest
 pytest -q
 ```
 
-The tests are offline (no Telegram, no credentials) and cover the pure helpers.
+The tests are offline (no Telegram, no credentials) and cover the helpers, the menu, and the scrape / verify loops
+(through a fake Telethon client).
 
 ---
 

@@ -35,7 +35,10 @@ def _count_comments(comments_list) -> int:
     if pd.isna(comments_list):
         return 0
     if isinstance(comments_list, str):
-        comments_list = json.loads(comments_list)
+        try:
+            comments_list = json.loads(comments_list)
+        except json.JSONDecodeError:  # truncated by Excel's 32k limit, as in _comment_pairs
+            return 0
     return sum(1 for item in comments_list if item.get("Type") == "comment")
 
 

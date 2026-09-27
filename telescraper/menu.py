@@ -244,7 +244,7 @@ def run_menu(prompt: Prompt | None = None, dispatch=None) -> None:
         _print_menu()
         try:
             choice = prompt.text("Choose", "1")
-            if choice in ("0", "q", "quit", ""):
+            if choice in ("0", "q", "quit"):
                 return
             entry = _ACTIONS.get(choice)
             if entry is None:

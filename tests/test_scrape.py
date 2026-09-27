@@ -11,7 +11,7 @@ from telethon import utils
 from telethon.errors import (
     BroadcastForbiddenError, ChannelPrivateError, FloodWaitError, RpcCallFailError,
 )
-from telethon.tl.types import Channel, PeerChannel, PeerUser, ReactionEmoji, User
+from telethon.tl.types import Channel, InputPeerChannel, PeerChannel, PeerUser, ReactionEmoji, User
 
 import telescraper.scrape as scrape
 from telescraper.config import Credentials
@@ -164,11 +164,6 @@ class FakeClient:
         type(self).calls.append((channel, offset_id))
         type(self).offset_dates.append(offset_date)
         return self._main_gen(offset_id)
-
-
-class FloodClient(FakeClient):
-    async def __call__(self, request):
-        raise FloodWaitError(request=None)
 
 
 class FloodThenOkClient(FakeClient):
@@ -1203,6 +1198,20 @@ def test_channel_is_resolved_once(monkeypatch, tmp_path):
     assert all(a is peer for a in InviteClient.iter_args)
 
 
+def test_invite_chat_urls_are_message_links(monkeypatch, tmp_path):
+    class InviteClient(FakeClient):
+        async def get_input_entity(self, arg):
+            return InputPeerChannel(1629147115, 1) if isinstance(arg, str) else arg
+
+    monkeypatch.setattr(scrape, "TelegramClient", InviteClient)
+    path = scrape.run(Credentials(1, "h"), _params(tmp_path, channels=["https://t.me/+AbCdEf"],
+                                                   with_participants=False))
+    row = pd.read_parquet(path).set_index("Message ID").loc["20"]
+    assert row["Group"] == "@+AbCdEf"
+    assert row["Url"] == "https://t.me/c/1629147115/20"  # t.me/+hash/20 opens nothing
+    assert json.loads(row["Comments List"])[0]["Comment Url"].startswith("https://t.me/c/1629147115/20?comment=")
+
+
 def test_limit_stop_lists_unfinished_channels(fake_client, tmp_path, capsys):
     scrape.run(Credentials(1, "h"), _params(tmp_path, channels=["@a", "@b"], max_messages=1,
                                             with_participants=False))
@@ -1213,3 +1222,27 @@ def test_limit_stop_lists_unfinished_channels(fake_client, tmp_path, capsys):
 def test_full_run_lists_no_unfinished_channels(fake_client, tmp_path, capsys):
     scrape.run(Credentials(1, "h"), _params(tmp_path, with_participants=False))
     assert "not scraped or cut short" not in capsys.readouterr().out
+
+
+def test_persistent_500_escapes_telethon_as_retryable(monkeypatch):
+    # a real client: after request_retries Telethon must re-raise the 500 itself,
+    # not its generic ValueError, or RETRYABLE_RPC handling never fires
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+    from telethon.tl.functions.help import GetConfigRequest
+
+    async def go():
+        client = TelegramClient(StringSession(), 1, "x", **{**scrape.CLIENT_KWARGS, "request_retries": 1})
+
+        def send(request, ordered=False):
+            fut = asyncio.get_running_loop().create_future()
+            fut.set_exception(RpcCallFailError(request=request))
+            return fut
+
+        client._sender.send = send
+        await client(GetConfigRequest())
+
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda *_a, **_k: real_sleep(0))
+    with pytest.raises(scrape.RETRYABLE_RPC):
+        asyncio.run(go())

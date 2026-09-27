@@ -16,7 +16,7 @@ import pyarrow.parquet as pq
 from telethon import TelegramClient, utils
 from telethon.errors import ChannelPrivateError, FloodWaitError, ServerError, TimedOutError
 from telethon.tl.functions.messages import GetMessageReactionsListRequest
-from telethon.tl.types import PeerChannel, PeerUser, User
+from telethon.tl.types import InputPeerChannel, PeerChannel, PeerUser, User
 
 from telescraper.config import Credentials, session_for, start_kwargs
 from telescraper.datafiles import clean_xml_text, format_duration, save_table
@@ -53,7 +53,10 @@ REQUEST_RETRIES = 10       # per-request retries across reconnects; default 5
 CLIENT_KWARGS = dict(flood_sleep_threshold=FLOOD_SLEEP_THRESHOLD,
                      connection_retries=CONNECTION_RETRIES,
                      retry_delay=RETRY_DELAY,
-                     request_retries=REQUEST_RETRIES)
+                     request_retries=REQUEST_RETRIES,
+                     # re-raise the last 500/503 once retries run out, not Telethon's
+                     # generic ValueError, so RETRYABLE_RPC below actually catches it
+                     raise_last_call_error=True)
 
 # In-run automatic resume: restart a channel from the last checkpointed message
 # id when a connection error escapes iter_messages.
@@ -266,6 +269,14 @@ async def _warm_channel(client, ref: _ChannelRef, dialogs_loaded: bool) -> bool:
         await client.get_dialogs()
         return True
     return False
+
+
+async def _reconnect(client) -> None:
+    try:
+        if not client.is_connected():
+            await client.connect()  # Telethon won't recover a hard _disconnect on its own
+    except Exception as ce:
+        print(f"  ! reconnect failed: {ce}")
 
 
 def parse_date(value: str, *, end_of_day: bool = False) -> datetime:
@@ -614,6 +625,9 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                 # resolve once: a t.me/+hash string misses the session cache, so every
                 # iter_messages would otherwise re-check the invite over the network
                 ref = ref._replace(arg=await client.get_input_entity(ref.arg))
+                if ref.slug.startswith("+") and isinstance(ref.arg, InputPeerChannel):
+                    # t.me/+hash/<id> is no message link; the chat's t.me/c/<id>/<id> is
+                    ref = ref._replace(url_base=f"https://t.me/c/{ref.arg.channel_id}")
                 try:
                     title = getattr(await client.get_entity(ref.arg), "title", None)
                 except Exception:
@@ -691,11 +705,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                               f"({flood_attempts}/{FLOOD_MAX_ATTEMPTS}), then resuming from id "
                               f"{last_id or 'newest'}")
                         await asyncio.sleep(wait)
-                        try:
-                            if not client.is_connected():
-                                await client.connect()
-                        except Exception as ce:
-                            print(f"  ! reconnect failed: {ce}")
+                        await _reconnect(client)
                         continue
                     except (*NET_ERRORS, *RETRYABLE_RPC) as exc:
                         attempt += 1
@@ -708,11 +718,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                               f"retry {attempt}/{RESUME_MAX_ATTEMPTS} from id "
                               f"{last_id or 'newest'} in {wait}s")
                         await asyncio.sleep(wait)
-                        try:
-                            if not client.is_connected():
-                                await client.connect()  # Telethon won't recover a hard _disconnect on its own
-                        except Exception as ce:
-                            print(f"  ! reconnect failed: {ce}")
+                        await _reconnect(client)
                         continue
                     break  # iter_messages finished without a disconnect -> channel done
                 if not done_channel:  # only the --max-messages/--timeout break gets here
@@ -751,7 +757,8 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
     except (KeyboardInterrupt, asyncio.CancelledError):
         # asyncio.run() turns a SIGINT into task cancellation, i.e. a
         # CancelledError raised at the current await - not KeyboardInterrupt - so
-        # both must be caught here for `systemctl stop` to checkpoint.
+        # both must be caught here for Ctrl-C to checkpoint. (SIGTERM, e.g.
+        # `systemctl stop` / `docker stop`, is not converted and kills the run outright.)
         print()
         if not channel_closed:
             _write_checkpoint(i, last_id)

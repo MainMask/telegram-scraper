@@ -49,17 +49,23 @@ def _chunks(seq, n):
 
 
 def _load_saved(pattern: str, group: str) -> pd.DataFrame:
-    df = pd.concat([read_table(p) for p in resolve_inputs(pattern)], ignore_index=True)
-    if "Message ID" not in df.columns:
-        raise SystemExit(f"{pattern}: no 'Message ID' column — not a scraped posts file")
-    if "Reactor ID" in df.columns:
-        raise SystemExit(f"{pattern}: looks like a *_reactors file — pass the *_posts file")
+    frames = []
+    for p in resolve_inputs(pattern):
+        df = read_table(p)
+        # a folder input also holds the run's _reactors / _participants files
+        if "Reactor ID" in df.columns or "Message ID" not in df.columns:
+            print(f"  - skipped {p.name}: not a posts file")
+            continue
+        frames.append(df)
+    if not frames:
+        raise SystemExit(f"{pattern}: no scraped posts file — pass the *_posts file, not *_reactors")
+    df = pd.concat(frames, ignore_index=True)
     if "Group" in df.columns:  # a multi-channel scrape: ids of other channels are not ours
         groups = df["Group"].astype(str)
         df = df[groups.str.lower() == group.lower()]
         if df.empty:
             raise SystemExit(f"{pattern}: no rows for {group}; groups in the file: "
-                             f"{sorted(set(groups))}")
+                             f"{sorted(set(groups.dropna()))}")
     df = df[df["Message ID"].notna()].drop_duplicates(subset="Message ID").copy()
     df["_id"] = df["Message ID"].astype(int)
     return df

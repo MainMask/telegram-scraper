@@ -66,6 +66,16 @@ def test_count_comments_from_json_string():
     assert _count_comments(None) == 0
 
 
+def test_combine_tolerates_truncated_comments_list(tmp_path):
+    # an Excel-truncated cell (32k limit) survives a later `read --to parquet`
+    pd.DataFrame({"Group": ["@a", "@a"], "Message ID": [1, 2], "Date": ["2024-01-01", "2024-01-02"],
+                  "Comments List": ['[{"Type": "comment"}]', '[{"Type": "comm']}
+                 ).to_parquet(tmp_path / "p.parquet")
+    out = tmp_path / "u.parquet"
+    combine(str(tmp_path / "p.parquet"), str(out), ["Group", "Message ID"])
+    assert pd.read_parquet(out).set_index("Message ID")["Comments"].to_dict() == {"1": 1, "2": 0}
+
+
 @pytest.mark.parametrize(
     "raw,expected",
     [

@@ -179,7 +179,8 @@ async def _verify(creds: Credentials, params: VerifyParams):
             capped = last_in[0].id - id_max > BOUND_PROBE_CAP
             hi = range(id_max + 1, min(last_in[0].id + 1, id_max + 1 + BOUND_PROBE_CAP))
             hi_missed, _ = await _classify_absent(client, entity, list(hi), params)
-            print(f"upper bound: {'>=' if capped else ''}{len(hi_missed)} in-window post(s) after the last saved id {id_max}")
+            print(f"upper bound: {'>=' if capped else ''}{len(hi_missed)} in-window post(s) "
+                  f"after the last saved id {id_max}")
             for mid, mdate in hi_missed:
                 flagged.append((mid, mdate, "after-last-saved"))
 

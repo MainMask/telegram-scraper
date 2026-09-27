@@ -250,7 +250,7 @@ def _channel_ref(raw: str) -> _ChannelRef:
     address it and how we render it. Numeric IDs (e.g. '-1001629147115', as shown
     by Telegram clients) become `t.me/c/<short_id>` links and a 'c<short_id>' slug."""
     s = raw.strip()
-    m = re.match(r"(?:https?://)?(?:www\.)?t\.me/c/(\d+)", s)
+    m = re.match(r"(?:https?://)?(?:www\.)?(?:t\.me|telegram\.(?:me|dog))/c/(\d+)", s)
     if m:  # a private-channel link: the same channel as its -100<id> numeric ID
         s = f"-100{m[1]}"
     body = s[1:] if s.startswith("-") else s

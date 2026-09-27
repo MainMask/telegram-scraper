@@ -130,7 +130,8 @@ reduced to `name`, and the `Group` column is stored normalised as `@name`. A web
 `t.me/joinchat/hash`) works for a chat the account is already in; its `Group` is `@+hash`.
 
 It may also be a **numeric ID** such as `-1001629147115` (the form Telegram clients and
-`t.me/c/1629147115/…` links use) — handy for private channels that have no username. The
+`t.me/c/1629147115/…` links use; such a link is accepted too) — handy for private channels
+that have no username. The
 logged-in account must already be a member of that channel (or have it in its dialogs) for
 the ID to resolve. For an ID-only channel the `Group` column and file names use
 `@c<short_id>` and links are `https://t.me/c/<short_id>/…`.

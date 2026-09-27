@@ -96,6 +96,7 @@ def test_channel_slug(raw, expected):
         ("1629147115", 1629147115, "c1629147115", "https://t.me/c/1629147115"),
         ("https://t.me/c/1629147115/5", -1001629147115, "c1629147115", "https://t.me/c/1629147115"),
         ("t.me/c/1629147115", -1001629147115, "c1629147115", "https://t.me/c/1629147115"),
+        ("telegram.me/c/1629147115/5", -1001629147115, "c1629147115", "https://t.me/c/1629147115"),
         ("https://t.me/s/durov", "@durov", "durov", "https://t.me/durov"),
         ("https://t.me/joinchat/AbC", "https://t.me/+AbC", "+AbC", "https://t.me/+AbC"),
         ("+AbCd", "https://t.me/+AbCd", "+AbCd", "https://t.me/+AbCd"),

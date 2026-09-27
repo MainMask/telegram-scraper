@@ -893,11 +893,11 @@ def test_eta_uses_current_channel_time(fake_client, tmp_path, monkeypatch, capsy
         clock[0] += 20  # every clock read moves time forward
         return clock[0]
 
-    async def _sleep(*a, **k):
-        clock[0] += 10_000  # the 60s/channel pause: a long gap between the channels
+    async def _nosleep(*a, **k):
+        return None
 
     monkeypatch.setattr(scrape.time, "monotonic", _monotonic)
-    monkeypatch.setattr(scrape.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(scrape.asyncio, "sleep", _nosleep)  # skip the 60s/channel pause
     scrape.run(Credentials(1, "h"), _params(tmp_path, channels=["@a", "@b"],
                                             with_participants=False))
     etas = [line.split("ETA ")[1] for line in capsys.readouterr().out.splitlines()

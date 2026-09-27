@@ -730,7 +730,8 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                 raise
             except Exception as exc:
                 print(f"{channel} error: {exc}")
-                failed.append((channel, str(exc)))
+                if not channel_closed:  # else only the _until_ snapshot failed; the data is saved
+                    failed.append((channel, f"{type(exc).__name__}: {exc}"))
 
             # be gentle: at least 60s per channel
             spent = time.monotonic() - loop_start

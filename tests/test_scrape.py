@@ -1073,5 +1073,23 @@ def test_failed_channel_is_listed_at_the_end(monkeypatch, tmp_path, capsys):
                                                    with_participants=False))
 
     tail = capsys.readouterr().out.split("Concluded")[1]
-    assert "1 channel(s) stopped on an error" in tail and "@bad: boom" in tail
+    assert "1 channel(s) stopped on an error" in tail and "@bad: RuntimeError: boom" in tail
     assert set(pd.read_parquet(path)["Group"]) == {"@a"}  # the run still finished
+
+
+def test_snapshot_error_after_complete_channel_is_not_listed(fake_client, tmp_path, capsys,
+                                                             monkeypatch):
+    real = scrape.save_table
+
+    def failing_snapshot(df, path, fmt=None):
+        if "_until_" in str(path):
+            raise ValueError("snapshot write failed")
+        return real(df, path, fmt)
+
+    monkeypatch.setattr(scrape, "save_table", failing_snapshot)
+    path = scrape.run(Credentials(1, "h"), _params(tmp_path, with_participants=False))
+
+    out = capsys.readouterr().out
+    assert "snapshot write failed" in out                         # still logged inline
+    assert "stopped on an error" not in out                       # but not called incomplete
+    assert list(pd.read_parquet(path)["Message ID"]) == ["30", "20"]

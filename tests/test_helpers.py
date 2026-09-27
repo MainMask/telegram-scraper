@@ -295,6 +295,16 @@ def test_links_keep_dashes_in_invite_hashes(tmp_path):
                       "https://t.me/+AAAAAE-abc_d": 1, "https://t.me/addlist/ab-CD": 1}
 
 
+def test_links_count_telegram_me_and_www_aliases(tmp_path):
+    text = ("telegram.me/Foo https://www.t.me/foo t.me/foo Telegram.me/foo HTTPS://T.ME/foo "
+            "https://telegram.dog/joinchat/AbC T.me/+XyZ sometelegram.me/x")
+    pd.DataFrame({"Content": [text]}).to_parquet(tmp_path / "in.parquet")
+    links(str(tmp_path / "in.parquet"), str(tmp_path / "l"))
+    counts = dict(read_table(tmp_path / "l.xlsx").values)
+    # the domain ignores case, the invite hash keeps it
+    assert counts == {"https://t.me/foo": 5, "https://t.me/+AbC": 1, "https://t.me/+XyZ": 1}
+
+
 @pytest.mark.parametrize("n_matches, files", [(3, ["f_unique.xlsx"]),
                                               (4, ["f_part_1.xlsx", "f_part_2.xlsx"])])
 def test_filter_file_split(tmp_path, n_matches, files):

@@ -11,10 +11,13 @@ from tqdm import tqdm
 from telescraper.datafiles import read_table, resolve_inputs, save_table
 
 _URL_RE = re.compile(r"http\S+|www\S+")
-_TME_RE = re.compile(r"(?<![\w.])((?:https?://)?t\.me/[^\s]+)")  # the scheme is often omitted
+# the scheme is often omitted; telegram.me (the pre-2017 domain) and telegram.dog are t.me aliases.
+# Only this prefix ignores case (Telegram.me/…): invite hashes after it are case-sensitive
+_TME_PREFIX = r"(?i:(?:https?://)?(?:www\.)?(?:t\.me|telegram\.(?:me|dog)))"
+_TME_RE = re.compile(rf"(?<![\w.])({_TME_PREFIX}/[^\s]+)")
 # t.me/s/<name> (web preview) and boost/<name> point at <name>; c/<id>, joinchat/<hash>
 # (counted as +<hash>) and addlist/<hash> keep their key part
-_TME_BASE_RE = re.compile(r"(?:https?://)?t\.me/(?:s/|boost/)?(c/\d+|joinchat/[\w-]+|addlist/[\w-]+|\+[\w-]+|\w+)")
+_TME_BASE_RE = re.compile(rf"{_TME_PREFIX}/(?:s/|boost/)?(c/\d+|joinchat/[\w-]+|addlist/[\w-]+|\+[\w-]+|\w+)")
 # t.me paths that are Telegram features, not channels or groups
 _TME_SERVICE = {"share", "addstickers", "addemoji", "addtheme", "iv", "proxy", "socks",
                 "setlanguage", "boost"}

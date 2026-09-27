@@ -103,7 +103,7 @@ telescraper <command> [options]        # or:  python -m telescraper <command>
 | `summary` | per-group monthly tables (contents / comments / total) |
 | `sample`  | proportional per-category sample to `.xlsx` |
 | `filter`  | keep rows matching keywords, add one 0/1 column per keyword |
-| `links`   | extract and count `t.me` links from `Content` (snowball sampling) |
+| `links`   | extract and count `t.me` links (also `telegram.me` / `telegram.dog`) from `Content` (snowball sampling) |
 | `verify`  | probe the live channel for posts a scrape missed (id-gap + bounds check) |
 
 Run `telescraper <command> --help` for the full flag list.

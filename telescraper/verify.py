@@ -8,7 +8,7 @@ un-scraped post can be told apart from an ordinary deletion.
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 from telethon import TelegramClient
@@ -91,16 +91,20 @@ async def _check_comments(client, entity, df: pd.DataFrame, params: VerifyParams
     else:
         print("comment check: input has no 'Comments'/'Comments List' column — skipped")
         return []
+    # every post with nothing captured (a whole lost thread), plus a sample of the rest
+    zero = list(nc[nc == 0].index)
     with_c = nc[nc > 0]
-    if with_c.empty:
-        return []
     n = min(params.comment_sample, len(with_c))
-    ids = sorted(with_c.sample(n, random_state=0).index)
-    print(f"comment threads: re-checking {n} of {len(with_c)} threads against the server...")
+    ids = sorted(zero + list(with_c.sample(n, random_state=0).index))
+    if not ids:
+        return []
+    print(f"comment threads: re-checking {n} of {len(with_c)} threads and all {len(zero)} "
+          f"post(s) with no captured comments against the server...")
     short = []
     for batch in _chunks(ids, ID_BATCH):
         for m in await client.get_messages(entity, ids=batch):
-            if m is None or not getattr(m, "replies", None):
+            # only a channel post's comment section; a group's reply thread is never scraped
+            if m is None or not getattr(m, "replies", None) or not m.replies.comments:
                 continue
             expected = m.replies.replies or 0
             got = int(nc.get(m.id, 0))
@@ -155,19 +159,24 @@ async def _verify(creds: Credentials, params: VerifyParams):
             print(f"    ! missed id {mid}  {mdate:%Y-%m-%d %H:%M}")
             flagged.append((mid, mdate, "missed"))
 
-        # check: the scrape reached the channel's oldest in-window message
-        if oldest and oldest.id < id_min and oldest.date >= params.date_min:
-            capped = id_min - oldest.id > BOUND_PROBE_CAP
-            lo = range(oldest.id, min(id_min, oldest.id + BOUND_PROBE_CAP))
+        # check: the scrape reached the oldest in-window message. The window starts
+        # right after the last message older than date_min (or at the channel's first).
+        before = await client.get_messages(entity, limit=1, offset_date=params.date_min)
+        lo_start = before[0].id + 1 if before else getattr(oldest, "id", id_min)
+        if lo_start < id_min:
+            capped = id_min - lo_start > BOUND_PROBE_CAP
+            lo = range(lo_start, min(id_min, lo_start + BOUND_PROBE_CAP))
             lo_missed, _ = await _classify_absent(client, entity, list(lo), params)
-            print(f"lower bound: channel starts at id {oldest.id} < first saved {id_min} -> "
+            print(f"lower bound: window starts at id {lo_start} < first saved {id_min} -> "
                   f"{'>=' if capped else ''}{len(lo_missed)} in-window post(s) before the scrape")
             for mid, mdate in lo_missed:
                 flagged.append((mid, mdate, "before-first-saved"))
 
-        # check: nothing in-window newer than the last saved id
-        if newest and newest.id > id_max and newest.date <= params.date_max:
-            hi = range(id_max + 1, min(newest.id + 1, id_max + 1 + BOUND_PROBE_CAP))
+        # check: nothing in-window newer than the last saved id (offset_date is exclusive)
+        last_in = await client.get_messages(entity, limit=1,
+                                            offset_date=params.date_max + timedelta(seconds=1))
+        if last_in and last_in[0].id > id_max:
+            hi = range(id_max + 1, min(last_in[0].id + 1, id_max + 1 + BOUND_PROBE_CAP))
             hi_missed, _ = await _classify_absent(client, entity, list(hi), params)
             print(f"upper bound: {len(hi_missed)} in-window post(s) after the last saved id {id_max}")
             for mid, mdate in hi_missed:

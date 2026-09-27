@@ -1093,3 +1093,133 @@ def test_snapshot_error_after_complete_channel_is_not_listed(fake_client, tmp_pa
     assert "snapshot write failed" in out                         # still logged inline
     assert "stopped on an error" not in out                       # but not called incomplete
     assert list(pd.read_parquet(path)["Message ID"]) == ["30", "20"]
+
+
+class BadThenDeadClient(FakeClient):
+    """`@bad` fails with an ordinary error; channels in `dead` keep losing the connection."""
+    dead: set = set()
+
+    def iter_messages(self, channel, reply_to=None, **k):
+        if reply_to is None and (channel == "@bad" or channel in self.dead):
+            exc = RuntimeError("boom") if channel == "@bad" else ConnectionError("down")
+
+            async def gen():
+                raise exc
+                yield
+            return gen()
+        return super().iter_messages(channel, reply_to=reply_to, **k)
+
+
+def test_failed_channel_is_still_listed_after_resume(monkeypatch, tmp_path, capsys):
+    async def _nosleep(*a, **k):
+        return None
+
+    monkeypatch.setattr(scrape.asyncio, "sleep", _nosleep)
+    monkeypatch.setattr(scrape, "TelegramClient", BadThenDeadClient)
+    channels = ["@bad", "@a", "@b"]
+    monkeypatch.setattr(BadThenDeadClient, "dead", {"@b"})
+    with pytest.raises(SystemExit):
+        scrape.run(Credentials(1, "h"), _params(tmp_path, channels=channels,
+                                                with_participants=False))
+    meta = json.loads((_ckpt(tmp_path) / "resume.json").read_text())
+    assert meta["failed"] == [["@bad", "RuntimeError: boom"]]
+
+    monkeypatch.setattr(BadThenDeadClient, "dead", set())
+    capsys.readouterr()
+    scrape.run(Credentials(1, "h"), _params(tmp_path, channels=channels, resume=True,
+                                            with_participants=False))
+    tail = capsys.readouterr().out.split("Concluded")[1]
+    assert "1 channel(s) stopped on an error" in tail and "@bad: RuntimeError: boom" in tail
+
+
+def test_ctrl_c_after_failed_channel_does_not_roll_back_to_it(monkeypatch, tmp_path):
+    pauses = []
+
+    async def _sleep(delay, *a, **k):
+        if delay > 1:  # the between-channel pause; interrupt the one after @bad
+            pauses.append(delay)
+            if len(pauses) == 2:
+                raise KeyboardInterrupt
+
+    monkeypatch.setattr(scrape.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(scrape, "TelegramClient", BadThenDeadClient)
+    monkeypatch.setattr(BadThenDeadClient, "dead", set())
+    with pytest.raises(SystemExit):
+        scrape.run(Credentials(1, "h"), _params(tmp_path, channels=["@a", "@bad", "@b"]))
+    meta = json.loads((_ckpt(tmp_path) / "resume.json").read_text())
+    assert (meta["channel_index"], meta["last_id"]) == (2, 0)
+    assert meta["failed"] == [["@bad", "RuntimeError: boom"]]
+
+
+def test_fresh_run_clears_stale_snapshots(fake_client, tmp_path):
+    old = _partial(tmp_path) / "OldChannel_until_00099.parquet"
+    old.parent.mkdir(parents=True)
+    pd.DataFrame([{**_CK_ROW_30, "Message ID": 777}]).to_parquet(old)
+
+    scrape.run(Credentials(1, "h"), _params(tmp_path, with_participants=False))
+    assert not old.exists()
+    assert list(_partial(tmp_path).glob("SomeChannel_until_*"))  # this run's snapshot stays
+
+
+def test_resume_command_dates_roundtrip_utc_midnight(tmp_path):
+    # 03:00+03:00 is exactly 00:00 UTC: an explicit time must not become end-of-day
+    p = _params(tmp_path)
+    p.date_max = scrape.parse_date("2024-02-01T03:00+03:00", end_of_day=True)
+    argv = scrape._resume_command(p).split()[1:]
+    assert scrape.parse_date(argv[argv.index("--date-max") + 1], end_of_day=True) == p.date_max
+
+
+def test_comments_list_keeps_non_ascii_text(monkeypatch, tmp_path):
+    class CyrillicClient(FakeClient):
+        def iter_messages(self, channel, reply_to=None, **k):
+            if reply_to is None:
+                return super().iter_messages(channel, **k)
+
+            async def replies():
+                if reply_to == 20:
+                    yield _msg(999, datetime(2024, 6, 5, tzinfo=timezone.utc), "привет",
+                               sender=User(id=777, access_hash=1, username="bob"))
+            return replies()
+
+    monkeypatch.setattr(scrape, "TelegramClient", CyrillicClient)
+    path = scrape.run(Credentials(1, "h"), _params(tmp_path, with_participants=False))
+    df = pd.read_parquet(path)
+    raw = df.loc[df["Message ID"] == "20", "Comments List"].iloc[0]
+    assert "привет" in raw and json.loads(raw)[0]["Comment Content"] == "привет"
+
+
+def test_channel_is_resolved_once(monkeypatch, tmp_path):
+    peer = object()  # stands in for the InputPeerChannel of an invite-link chat
+
+    class InviteClient(FakeClient):
+        lookups = 0
+        iter_args = []
+
+        async def get_input_entity(self, arg):
+            if isinstance(arg, str):  # a t.me/+hash lookup is a network call each time
+                type(self).lookups += 1
+                return peer
+            return arg
+
+        def iter_messages(self, channel, **k):
+            type(self).iter_args.append(channel)
+            return super().iter_messages(channel, **k)
+
+    monkeypatch.setattr(scrape, "TelegramClient", InviteClient)
+    scrape.run(Credentials(1, "h"), _params(tmp_path, channels=["https://t.me/+AbCdEf"],
+                                            with_participants=False))
+    assert InviteClient.lookups == 1
+    assert len(InviteClient.iter_args) == 2  # the channel + post 20's comment thread
+    assert all(a is peer for a in InviteClient.iter_args)
+
+
+def test_limit_stop_lists_unfinished_channels(fake_client, tmp_path, capsys):
+    scrape.run(Credentials(1, "h"), _params(tmp_path, channels=["@a", "@b"], max_messages=1,
+                                            with_participants=False))
+    tail = capsys.readouterr().out.split("Concluded")[1]
+    assert "stopped by --max-messages/--timeout - not scraped or cut short: @a, @b" in tail
+
+
+def test_full_run_lists_no_unfinished_channels(fake_client, tmp_path, capsys):
+    scrape.run(Credentials(1, "h"), _params(tmp_path, with_participants=False))
+    assert "not scraped or cut short" not in capsys.readouterr().out

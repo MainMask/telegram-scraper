@@ -150,10 +150,12 @@ def test_verify_argv_prefills_from_file(tmp_path, monkeypatch):
     _write_posts(tmp_path)
     from telescraper.menu import _verify_argv
 
-    argv = _verify_argv(_prompt(["1", "", "", "", "", ""]))  # pick #1, accept every default
+    # pick #1, accept the guesses; the saved posts' span is not the scrape's window, so
+    # the dates are never guessed - a blank answer is asked again
+    argv = _verify_argv(_prompt(["1", "", "", "01.01.2024", "31.12.2024", "", ""]))
     assert argv == ["verify", "--input", "output/Baza_posts.parquet",
                     "--channel", "-100123",
-                    "--date-min", "02.01.2024", "--date-max", "30.06.2024",
+                    "--date-min", "01.01.2024", "--date-max", "31.12.2024",
                     "--output", "output/Baza_missed.parquet"]
     _valid(argv)
 
@@ -163,7 +165,7 @@ def test_verify_argv_prefills_from_dated_file(tmp_path, monkeypatch):
     _write_posts(tmp_path, name="Baza_posts_02.01.2024-30.06.2024.parquet")
     from telescraper.menu import _verify_argv
 
-    argv = _verify_argv(_prompt(["1", "", "", "", "", ""]))
+    argv = _verify_argv(_prompt(["1", "", "01.01.2024", "31.12.2024", "", ""]))
     assert argv[:3] == ["verify", "--input",
                         "output/Baza_posts_02.01.2024-30.06.2024.parquet"]
     assert argv[-2:] == ["--output", "output/Baza_missed.parquet"]  # span stripped, not kept

@@ -297,6 +297,7 @@ def sample(input_path: str, output: str, text_col: str, category_col: str, sampl
 
 def filter_keywords(input_path: str, output: str, content_col: str, keywords: list[str], max_rows_per_file: int) -> None:
     """Keep rows containing any keyword; add one 0/1 column per keyword."""
+    keywords = list(dict.fromkeys(keywords))  # a repeated keyword would be counted twice
     df = read_table(input_path)
     _require_columns(df, [content_col], input_path)
     if "Comments List" in df.columns:

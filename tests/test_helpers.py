@@ -1,6 +1,7 @@
 """Offline tests for the pure helpers (no Telegram network, no credentials)."""
 
 import json
+from datetime import datetime, timezone
 
 import pandas as pd
 import pytest
@@ -285,6 +286,14 @@ def test_filter_file_split(tmp_path, n_matches, files):
     assert sorted(p.name for p in tmp_path.glob("f_*.xlsx")) == files
 
 
+def test_filter_repeated_keyword_counts_once(tmp_path):
+    pd.DataFrame({"Content": ["foo bar"]}).to_parquet(tmp_path / "in.parquet")
+    filter_keywords(str(tmp_path / "in.parquet"), str(tmp_path / "f"), "Content", ["foo", "foo"], 10)
+    out = pd.read_excel(tmp_path / "f_unique.xlsx")
+    assert list(out.columns) == ["Content", "foo", "Keyword_Count"]
+    assert out["Keyword_Count"].tolist() == [1]
+
+
 def test_save_table_creates_parent_dir(tmp_path):
     path = save_table(pd.DataFrame({"a": [1]}), tmp_path / "new" / "x", "parquet")
     assert path == tmp_path / "new" / "x.parquet" and path.exists()
@@ -359,3 +368,12 @@ def test_cli_rejects_non_positive_sizes(cmd, flag):
         argv += ["--keywords", "k"]
     with pytest.raises(SystemExit):
         build_parser().parse_args(argv)
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("2024-01-31T05", datetime(2024, 1, 31, 5, tzinfo=timezone.utc)),     # explicit hour, no colon
+    ("20240131T0500", datetime(2024, 1, 31, 5, tzinfo=timezone.utc)),     # basic ISO time
+    ("20240131", datetime(2024, 1, 31, 23, 59, 59, tzinfo=timezone.utc)),  # basic ISO date only
+])
+def test_parse_date_end_of_day_only_for_date_only_input(value, expected):
+    assert parse_date(value, end_of_day=True) == expected

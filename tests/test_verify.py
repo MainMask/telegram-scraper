@@ -54,10 +54,11 @@ class FakeVerifyClient:
     async def get_input_entity(self, arg):
         return arg
 
-    async def get_messages(self, entity, ids=None, limit=None, reverse=False, **k):
+    async def get_messages(self, entity, ids=None, limit=None, reverse=False, offset_date=None, **k):
         if ids is not None:
             return [CHANNEL.get(i) for i in ids]
-        ordered = [CHANNEL[k] for k in sorted(CHANNEL, reverse=not reverse)]
+        ordered = [CHANNEL[k] for k in sorted(CHANNEL, reverse=not reverse)
+                   if offset_date is None or CHANNEL[k].date < offset_date]
         out = _TotalList(ordered[:limit] if limit else [])
         out.total = len(CHANNEL)
         return out
@@ -115,10 +116,17 @@ def test_verify_ignores_service_and_out_of_window(tmp_path, capsys):
     assert "0 REAL POSTS MISSED" in log
 
 
-def test_verify_detects_short_scrape(tmp_path, capsys):
+def _monotonic_channel(monkeypatch):
+    """Ids grow with date in a real channel, which the window bounds rely on; drop 95
+    (older than its neighbours), or it would pass for the last message before the window."""
+    monkeypatch.delitem(CHANNEL, 95)
+
+
+def test_verify_detects_short_scrape(tmp_path, capsys, monkeypatch):
+    _monotonic_channel(monkeypatch)
     with pytest.raises(SystemExit):
         verify.run(Credentials(1, "h"), _params(tmp_path, [90, 98, 100]))
-    assert "channel starts at id 88" in capsys.readouterr().out
+    assert "window starts at id 88" in capsys.readouterr().out
 
 
 def test_verify_comment_sample(tmp_path, capsys):
@@ -129,6 +137,37 @@ def test_verify_comment_sample(tmp_path, capsys):
     log = capsys.readouterr().out
     assert "short thread id 90  captured 10 / server 40" in log
     assert "0 posts missed; 1 thread(s) look short" in log
+
+
+def test_verify_comment_check_covers_threads_with_nothing_captured(tmp_path, capsys):
+    verify.run(Credentials(1, "h"),
+               _params(tmp_path, REAL_IN_WINDOW,
+                       comment_sample=1,
+                       cols={"Comments": [0, 0, 0, 0]}))  # post 90's 40 comments all lost
+    assert "short thread id 90  captured 0 / server 40" in capsys.readouterr().out
+
+
+def test_verify_detects_scrape_cut_short_at_the_bottom(tmp_path, capsys, monkeypatch):
+    _monotonic_channel(monkeypatch)
+    # the channel (from id 88) is older than the window, so its oldest message is out of it
+    p = _params(tmp_path, [98, 100], output=str(tmp_path / "missed.parquet"))
+    p.date_min = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    with pytest.raises(SystemExit):
+        verify.run(Credentials(1, "h"), p)
+    flagged = pd.read_parquet(p.output)
+    assert flagged["Message ID"].tolist() == [90]
+    assert flagged["Reason"].tolist() == ["before-first-saved"]
+
+
+def test_verify_detects_scrape_cut_short_at_the_top(tmp_path, capsys):
+    # the channel's newest message (id 100, Jan 5) is past the window
+    p = _params(tmp_path, [88, 90], output=str(tmp_path / "missed.parquet"))
+    p.date_max = datetime(2024, 1, 4, 23, 59, 59, tzinfo=timezone.utc)
+    with pytest.raises(SystemExit):
+        verify.run(Credentials(1, "h"), p)
+    flagged = pd.read_parquet(p.output)
+    assert flagged["Message ID"].tolist() == [98]
+    assert flagged["Reason"].tolist() == ["after-last-saved"]
 
 
 def test_verify_rejects_reactors_file(tmp_path):
@@ -185,3 +224,14 @@ def test_verify_unresolvable_channel_exits_cleanly(tmp_path, monkeypatch):
     monkeypatch.setattr(verify, "TelegramClient", UnknownChannelClient)
     with pytest.raises(SystemExit, match="-100123: Cannot find any entity"):
         verify.run(Credentials(1, "h"), _params(tmp_path, REAL_IN_WINDOW))
+
+
+def test_verify_comment_check_ignores_megagroup_reply_threads(tmp_path, capsys, monkeypatch):
+    # a group's reply thread (comments=False) is not a comment section; scrape never collects it
+    monkeypatch.setitem(CHANNEL, 88, types.SimpleNamespace(
+        id=88, date=datetime(2024, 1, 1, 12, tzinfo=timezone.utc), action=None,
+        replies=types.SimpleNamespace(replies=40, comments=False)))
+    verify.run(Credentials(1, "h"),
+               _params(tmp_path, REAL_IN_WINDOW, comment_sample=1,
+                       cols={"Comments": [0, 40, 0, 0]}))
+    assert "short thread" not in capsys.readouterr().out

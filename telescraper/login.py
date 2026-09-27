@@ -20,7 +20,7 @@ async def _login(creds: Credentials, session: str, as_string: bool) -> None:
             print("Add this line to .env (it gives full access to the account - keep it private):")
             print(f"TG_SESSION_STRING={client.session.save()}")
         else:
-            print(f"Session saved: {session}.session")
+            print(f"Session saved: {session if session.endswith('.session') else session + '.session'}")
     finally:
         await client.disconnect()
 

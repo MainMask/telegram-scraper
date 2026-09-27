@@ -5,7 +5,7 @@ import json
 import shlex
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from typing import NamedTuple
 
@@ -236,7 +236,8 @@ def channel_slug(channel: str) -> str:
 
 class _ChannelRef(NamedTuple):
     arg: str | int   # what to pass to Telethon: int for a numeric ID, "@name" for a t.me/s/ link,
-                     # a t.me/+hash URL for an invite, else the raw string
+                     # a t.me/+hash URL for an invite, else the raw string; the scrape loop
+                     # replaces it with the resolved InputPeer
     slug: str        # Group column value + output filename component
     url_base: str    # a message URL is f"{url_base}/{message_id}"
 
@@ -279,15 +280,17 @@ async def _warm_channel(client, ref: _ChannelRef, dialogs_loaded: bool) -> bool:
 def parse_date(value: str, *, end_of_day: bool = False) -> datetime:
     """Accept 'DD.MM.YYYY' or an ISO date ('YYYY-MM-DD')."""
     value = value.strip()
-    try:
-        dt = datetime.fromisoformat(value)
+    try:  # a date only: end_of_day extends it; an explicit time is taken as given
+        try:
+            d = date.fromisoformat(value)
+        except ValueError:
+            d = datetime.strptime(value, "%d.%m.%Y").date()
+        dt = datetime.combine(d, dtime(23, 59, 59) if end_of_day else dtime())
     except ValueError:
         try:
-            dt = datetime.strptime(value, "%d.%m.%Y")
+            dt = datetime.fromisoformat(value)
         except ValueError:
             raise SystemExit(f"Bad date {value!r}: use DD.MM.YYYY or YYYY-MM-DD")
-    if end_of_day and dt.time() == datetime.min.time():
-        dt = dt.replace(hour=23, minute=59, second=59)
     return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
@@ -484,7 +487,7 @@ async def _collect_post(client, ref: _ChannelRef, message, params: ScrapeParams)
         "Shares": message.forwards,
         "Media": bool(message.media),
         "Url": f"{ref.url_base}/{message.id}",
-        "Comments List": clean_xml_text(json.dumps(comments)),
+        "Comments List": clean_xml_text(json.dumps(comments, ensure_ascii=False)),
     }
     return row, reactors
 
@@ -498,6 +501,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
 
     data: list[dict] = []
     reactors: list[dict] = []
+    failed: list[tuple[str, str]] = []  # (channel, error) of channels cut short by an error
     t_index = 0
     start_time = time.monotonic()
 
@@ -549,6 +553,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
             "channel_index": channel_index,
             "last_id": last_id,
             "t_index": t_index,
+            "failed": failed,
             "updated": datetime.now(timezone.utc).isoformat(),
         }, indent=2))
 
@@ -559,6 +564,8 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
         print(f"  ! --resume: {ckpt_dir / 'resume.json'} not found; starting a fresh run")
     if not resume_meta_ok:
         _clear_checkpoint(ckpt_dir)  # fresh run: never inherit a previous job's shards
+        for p in partial_dir.glob("*_until_*"):  # ... or its per-channel snapshots
+            p.unlink()
     else:
         rj = ckpt_dir / "resume.json"
         meta = json.loads(rj.read_text(encoding="utf-8"))
@@ -579,6 +586,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
         n_reactor_rows = _count_shard_rows(ckpt_dir, "reactors")
         resume_channel_index = int(meta["channel_index"])
         resume_last_id = int(meta["last_id"])
+        failed = [tuple(f) for f in meta.get("failed", [])]
         print(SEP)
         print(f"Resuming '{params.name}': channel {resume_channel_index + 1}/{n_channels}, "
               f"{t_index} posts + {n_reactor_rows} reactor rows already saved in "
@@ -592,13 +600,15 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
     i, last_id = resume_channel_index, resume_last_id  # for the Ctrl-C handler below
     snapshot_from = 0  # first shard index not yet written to an `_until_` snapshot
     dialogs_loaded = False
-    failed: list[tuple[str, str]] = []  # (channel, error) of channels cut short by an error
     channel_closed = False  # the channel's final checkpoint is written; Ctrl-C must not roll it back
+    cut_short: int | None = None  # first channel a --max-messages/--timeout stop left unfinished
     try:
         for i, channel in enumerate(params.channels):
             if i < resume_channel_index:
                 continue
             if t_index >= params.max_messages or time_is_up():
+                if cut_short is None:
+                    cut_short = i
                 break
 
             loop_start = time.monotonic()
@@ -611,6 +621,9 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
             try:
                 ref = _channel_ref(channel)
                 dialogs_loaded = await _warm_channel(client, ref, dialogs_loaded)
+                # resolve once: a t.me/+hash string misses the session cache, so every
+                # iter_messages would otherwise re-check the invite over the network
+                ref = ref._replace(arg=await client.get_input_entity(ref.arg))
                 try:
                     title = getattr(await client.get_entity(ref.arg), "title", None)
                 except Exception:
@@ -711,6 +724,8 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                             print(f"  ! reconnect failed: {ce}")
                         continue
                     break  # iter_messages finished without a disconnect -> channel done
+                if not done_channel:  # only the --max-messages/--timeout break gets here
+                    cut_short = i
 
                 print(f"##### {label}: done, {c_index:05} posts | "
                       f"overall {((i + 1) / n_channels) * 100:.0f}% #####")
@@ -721,8 +736,8 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                 channel_closed = True
                 partial_dir.mkdir(exist_ok=True)
                 partial = partial_dir / f"{ref.slug}_until_{t_index:05}"
-                # only this channel's new shards (after a --resume the first one
-                # covers everything not yet snapshotted, once)
+                # only this channel's new shards (after a --resume the first one also
+                # repeats the earlier channels' checkpointed posts; combine drops them)
                 save_table(_read_shards(ckpt_dir, "posts", start=snapshot_from),
                            partial, params.fmt)
                 snapshot_from = shard_index
@@ -732,6 +747,9 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                 print(f"{channel} error: {exc}")
                 if not channel_closed:  # else only the _until_ snapshot failed; the data is saved
                     failed.append((channel, f"{type(exc).__name__}: {exc}"))
+                    # move past it like a finished channel, so Ctrl-C/--resume don't retry it
+                    _write_checkpoint(i + 1, 0)
+                    channel_closed = True
 
             # be gentle: at least 60s per channel
             spent = time.monotonic() - loop_start
@@ -761,6 +779,9 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
               f"re-scrape them separately:")
         for channel, err in failed:
             print(f"    {channel}: {err}")
+    if cut_short is not None:
+        print(f"  ! stopped by --max-messages/--timeout - not scraped or cut short: "
+              f"{', '.join(params.channels[cut_short:])}")
     return posts_df
 
 

@@ -163,8 +163,9 @@ def _participants_argv(p: Prompt) -> list[str]:
 
 
 def _guess_verify_defaults(path: str) -> dict:
-    """Best-effort channel + date bounds from a scraped posts file, so the menu can
-    pre-fill `verify`'s arguments instead of making the user retype them."""
+    """Best-effort channel + output path from a scraped posts file, so the menu can
+    pre-fill `verify`'s arguments. Not the dates: the saved posts' span is not the
+    scrape's window, and defaulting to it would hide a scrape that was cut short."""
     from telescraper.datafiles import read_table
     import pandas as pd
 
@@ -172,7 +173,7 @@ def _guess_verify_defaults(path: str) -> dict:
     p = Path(path)
     try:
         try:
-            df = pd.read_parquet(p, columns=["Group", "Date"])
+            df = pd.read_parquet(p, columns=["Group"])
         except Exception:
             df = read_table(p)
         groups = df["Group"].dropna() if "Group" in df.columns else []
@@ -180,10 +181,6 @@ def _guess_verify_defaults(path: str) -> dict:
             g = str(groups.iloc[0]).lstrip("@")
             out["channel"] = (f"-100{g[1:]}" if g[:1] == "c" and g[1:].isdigit()
                               else f"@{g}")
-        dates = pd.to_datetime(df["Date"], errors="coerce").dropna() if "Date" in df.columns else []
-        if len(dates):
-            out["date_min"] = dates.min().strftime("%d.%m.%Y")
-            out["date_max"] = dates.max().strftime("%d.%m.%Y")
         stem = re.sub(r"(_posts(_\d{2}\.\d{2}\.\d{4}-\d{2}\.\d{2}\.\d{4})?)?\.(parquet|xlsx|csv)$", "", p.name)
         out["output"] = str(p.with_name(f"{stem}_missed.parquet"))
     except Exception:
@@ -197,10 +194,8 @@ def _verify_argv(p: Prompt) -> list[str]:
     argv = ["verify", "--input", src,
             "--channel", p.text("Channel (@name or numeric id) — a guess from the file",
                                 g.get("channel", ""), required=True),
-            "--date-min", p.text("Date from (DD.MM.YYYY) — the scrape's --date-min",
-                                 g.get("date_min", ""), required=True),
-            "--date-max", p.text("Date to (DD.MM.YYYY) — the scrape's --date-max",
-                                 g.get("date_max", ""), required=True)]
+            "--date-min", p.text("Date from (DD.MM.YYYY) — the scrape's --date-min", required=True),
+            "--date-max", p.text("Date to (DD.MM.YYYY) — the scrape's --date-max", required=True)]
     out = p.text("Write missed ids to (blank = skip)", g.get("output", ""))
     if out:
         argv += ["--output", out]

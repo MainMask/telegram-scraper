@@ -53,7 +53,10 @@ def test_login_without_username_prints_no_at_none(monkeypatch, capsys):
 
     monkeypatch.setattr(login, "TelegramClient", FakeClient)
     login.login(Credentials(1, "h"), "file")
-    assert "Logged in as Ann, id 1" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Logged in as Ann, id 1" in out and "Session saved: file.session\n" in out
+    login.login(Credentials(1, "h"), "file.session")  # Telethon doesn't add a second suffix
+    assert "Session saved: file.session\n" in capsys.readouterr().out
 
 
 def test_load_credentials_reads_dotenv_from_cwd(monkeypatch, tmp_path):

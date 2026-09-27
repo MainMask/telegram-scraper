@@ -136,7 +136,8 @@ the ID to resolve. For an ID-only channel the `Group` column and file names use
 `@c<short_id>` and links are `https://t.me/c/<short_id>/…`.
 
 Useful flags: `--channels-file channels.txt` (comma- or newline-separated), `--keyword <term>`,
-`--max-messages <n>`, `--timeout <seconds>` (stop after N seconds; `0`, the default, = no limit), `--no-comments` (skip the
+`--max-messages <n>`, `--timeout <seconds>` (stop after N seconds; `0`, the default, = no limit;
+either stop ends the run normally and lists the channels it did not finish), `--no-comments` (skip the
 per-post comment fetch), `--no-reactors` (see below), `--no-participants` (skip the
 `<name>_participants` table), `--session <name>`, `--format {parquet,excel}`,
 `--resume` (see *Interruptions* below).
@@ -181,7 +182,8 @@ collected):
 - `<name>_reactors_<from>-<to>.<ext>` — unless `--no-reactors`; one row per *(user, message, reaction)*:
   `Type, Target, Group, Message ID, Post ID, Url, Reactor ID, Reactor Username, Reactor Access Hash, Reactor Name, Reaction, Date`
 - `<name>_partial/` — `<slug>_until_NNNNN` snapshots written after each channel
-  (post-shaped, so `combine --input <name>_partial` merges just these). The resume
+  (post-shaped, so `combine --input <name>_partial` merges just these; a fresh run
+  without `--resume` deletes the previous run's snapshots first). The resume
   machinery lives in `<name>_partial/checkpoint/` — append-only
   `posts_part_NNNNN.parquet` / `reactors_part_NNNNN.parquet` shards (always parquet,
   whatever `--format` is) plus a `resume.json` cursor, written every 150 posts
@@ -253,9 +255,11 @@ with `get_messages(ids=…)` (a different Telegram API path). It takes every mes
 id absent from the scrape within the scraped range and asks the server what that id
 is: a deleted/never-existed id and a service message are fine, but a real message
 inside `--date-min…--date-max` is a **miss** and gets listed (and written to
-`--output`). It also checks that the scrape reached the channel's oldest in-window
-message. Exit code is non-zero if anything was missed. `--comment-sample N`
-additionally re-checks `N` random threads against the server's reply count.
+`--output`). It also checks both edges of the date window, so a scrape cut short
+(`--timeout`, `--max-messages`, a failed channel) is caught: nothing in-window may lie
+before the first or after the last saved id. Exit code is non-zero if anything was missed.
+`--comment-sample N` additionally re-checks `N` random threads, plus every post with no
+captured comments (a thread lost whole), against the server's reply count.
 Needs a free session (not while a `--resume` run is using it).
 
 A multi-channel posts file is fine: only the rows whose `Group` is `--channel` are checked.

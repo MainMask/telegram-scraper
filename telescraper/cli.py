@@ -255,7 +255,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="session name/path (default: ./telescraper.session)")
     vf.add_argument("--output", help="write the flagged message ids to this parquet file")
     vf.add_argument("--comment-sample", type=_non_negative_int, default=0,
-                    help="also re-check this many random comment threads against the server's reply count")
+                    help="also re-check this many random comment threads (plus every post with no "
+                         "captured comments) against the server's reply count")
     vf.set_defaults(func=cmd_verify)
 
     return parser

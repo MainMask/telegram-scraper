@@ -315,7 +315,7 @@ telescraper/
   verify.py      cross-check a scrape against the live channel for missed posts
   analysis.py    combine / comments / participants / summary / sample / filter / links
   datafiles.py   read/write parquet·xlsx·csv, text cleaning
-tests/           offline tests for the helpers
+tests/           offline tests (helpers, menu, scrape/verify via fake clients)
 ```
 
 ## Citation

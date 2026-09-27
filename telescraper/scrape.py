@@ -28,7 +28,7 @@ SEP = "-" * 80
 # waited out transparently instead of skipping the data. Longer waits raise
 # FloodWaitError, which the channel loop checkpoints and waits out itself.
 FLOOD_SLEEP_THRESHOLD = 3600
-# a FloodWaitError longer than this (or too many in a row) stops the run with a
+# a FloodWaitError longer than this (or too many in a row without progress) stops the run with a
 # --resume hint rather than sleeping for the better part of a day.
 FLOOD_MAX_WAIT = 6 * 3600
 FLOOD_MAX_ATTEMPTS = 12
@@ -617,6 +617,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
             last_id = resume_last_id if i == resume_channel_index else 0
             attempt = 0
             flood_attempts = 0
+            flood_last_id = None  # cursor at the previous FloodWaitError
             done_channel = False
             channel_closed = False
             try:
@@ -693,6 +694,9 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                         else:
                             done_channel = True
                     except FloodWaitError as exc:  # a soft ban longer than FLOOD_SLEEP_THRESHOLD
+                        if last_id != flood_last_id:  # progress since the last ban: count afresh
+                            flood_attempts = 0
+                        flood_last_id = last_id
                         flood_attempts += 1
                         _write_checkpoint(i, last_id)
                         wait = exc.seconds + FLOOD_RETRY_BUFFER

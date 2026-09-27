@@ -196,6 +196,21 @@ class FloodAfterClient(FakeClient):
         return await super().__call__(request)
 
 
+class FloodPerPostClient(FakeClient):
+    """The first reaction call for post 30 and for comment 999 each hit one soft ban."""
+    flooded: set = set()
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        type(self).flooded = set()
+
+    async def __call__(self, request):
+        if request.id in {30, 999} - type(self).flooded:
+            type(self).flooded.add(request.id)
+            raise FloodWaitError(request=None)
+        return await super().__call__(request)
+
+
 class HiddenListClient(FakeClient):
     """A broadcast channel whose posts report reactions.can_see_list=False."""
 
@@ -357,6 +372,17 @@ def test_persistent_flood_stops_with_resume_hint(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "FLOOD_WAIT" in out and "--resume" in out
     assert (_ckpt(tmp_path) / "resume.json").exists()     # checkpoint left for --resume
+
+
+def test_flood_attempts_reset_after_progress(monkeypatch, tmp_path):
+    monkeypatch.setattr(scrape, "TelegramClient", FloodPerPostClient)
+    monkeypatch.setattr(scrape, "FLOOD_RETRY_BUFFER", 0)
+    monkeypatch.setattr(scrape, "FLOOD_MAX_ATTEMPTS", 1)
+
+    # two bans, but post 30 was saved in between -> not "too many in a row"
+    path = scrape.run(Credentials(1, "h"),
+                      _params(tmp_path, with_reactors=True, with_participants=False))
+    assert list(pd.read_parquet(path)["Message ID"]) == ["30", "20"]
 
 
 def test_scrape_reactors_without_comments(fake_client, tmp_path):

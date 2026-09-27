@@ -1,5 +1,6 @@
 """Offline tests for `telescraper verify` (fake client, no Telegram network)."""
 
+import json
 import types
 from datetime import datetime, timezone
 
@@ -192,6 +193,24 @@ def test_verify_folder_skips_reactors_file(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "skipped T_reactors.parquet: not a posts file" in out
     assert "RESULT: 0 posts missed" in out
+
+
+def test_verify_dedups_str_and_int_ids(tmp_path, capsys):
+    # the _posts file keeps Message ID as str, an _until_ snapshot as int (and no Comments)
+    pd.DataFrame({"Message ID": [str(i) for i in REAL_IN_WINDOW], "Group": "@a",
+                  "Comments": [0, 10, 0, 0]}).to_parquet(tmp_path / "T_posts.parquet")
+    # named to sort before T_posts, so dedup keeps the snapshot's rows
+    ten = json.dumps([{"Type": "comment"}] * 10)
+    pd.DataFrame({"Message ID": REAL_IN_WINDOW, "Group": "@a",
+                  "Comments List": ["[]", ten, "[]", "[]"]}
+                 ).to_parquet(tmp_path / "SomeChannel_until_00004.parquet")
+    verify.run(Credentials(1, "h"), VerifyParams(
+        input=str(tmp_path), channel="@a", comment_sample=5,
+        date_min=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        date_max=datetime(2024, 12, 31, 23, 59, 59, tzinfo=timezone.utc)))
+    out = capsys.readouterr().out
+    assert "saved posts:          4" in out
+    assert "short thread id 90  captured 10 / server 40" in out
 
 
 def test_verify_folder_with_missed_file_lists_groups(tmp_path):

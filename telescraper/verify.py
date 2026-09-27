@@ -66,9 +66,10 @@ def _load_saved(pattern: str, group: str) -> pd.DataFrame:
         if df.empty:
             raise SystemExit(f"{pattern}: no rows for {group}; groups in the file: "
                              f"{sorted(set(groups.dropna()))}")
-    df = df[df["Message ID"].notna()].drop_duplicates(subset="Message ID").copy()
+    df = df[df["Message ID"].notna()].copy()
+    # dedup on the int: _posts files store the id as str, _until_ snapshots as int
     df["_id"] = df["Message ID"].astype(int)
-    return df
+    return df.drop_duplicates(subset="_id")
 
 
 async def _classify_absent(client, entity, ids, params: VerifyParams):
@@ -91,7 +92,10 @@ async def _classify_absent(client, entity, ids, params: VerifyParams):
 async def _check_comments(client, entity, df: pd.DataFrame, params: VerifyParams):
     """Sample scraped threads, compare captured comment counts to the server's."""
     if "Comments" in df.columns:
-        nc = df.set_index("_id")["Comments"].astype(int)
+        nc = df.set_index("_id")["Comments"]
+        if "Comments List" in df.columns:  # rows from an _until_ snapshot carry no count
+            nc = nc.fillna(df.set_index("_id")["Comments List"].apply(_count_comments))
+        nc = nc.astype(int)
     elif "Comments List" in df.columns:
         nc = df.set_index("_id")["Comments List"].apply(_count_comments)
     else:

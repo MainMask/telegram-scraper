@@ -14,7 +14,7 @@ _URL_RE = re.compile(r"http\S+|www\S+")
 _TME_RE = re.compile(r"(?<![\w.])((?:https?://)?t\.me/[^\s]+)")  # the scheme is often omitted
 # t.me/s/<name> (web preview) and boost/<name> point at <name>; c/<id>, joinchat/<hash>
 # (counted as +<hash>) and addlist/<hash> keep their key part
-_TME_BASE_RE = re.compile(r"(?:https?://)?t\.me/(?:s/|boost/)?(c/\d+|joinchat/[\w+]+|addlist/[\w+]+|[\w+]+)")
+_TME_BASE_RE = re.compile(r"(?:https?://)?t\.me/(?:s/|boost/)?(c/\d+|joinchat/[\w-]+|addlist/[\w-]+|\+[\w-]+|\w+)")
 # t.me paths that are Telegram features, not channels or groups
 _TME_SERVICE = {"share", "addstickers", "addemoji", "addtheme", "iv", "proxy", "socks",
                 "setlanguage", "boost"}
@@ -270,8 +270,9 @@ def summary(input_path: str, output_base: str, date_col: str, group_col: str, co
 def _sample_proportionally(df, text_column, category_column, sample_size):
     parts = []
     total_rows = len(df)
-    for category in tqdm(df[category_column].unique(), desc="Sampling categories"):
-        cat_df = df[df[category_column] == category]
+    # groupby, not unique() + ==: NaN == NaN is False, so an empty category would be lost
+    for _category, cat_df in tqdm(df.groupby(category_column, dropna=False, sort=False),
+                                  desc="Sampling categories"):
         target = min(len(cat_df), max(1, int(np.ceil(len(cat_df) / total_rows * sample_size))))
         non_empty = cat_df[cat_df[text_column].notna() & (cat_df[text_column].str.strip() != "")]
         if len(non_empty) >= target:

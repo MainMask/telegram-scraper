@@ -94,6 +94,8 @@ def test_channel_slug(raw, expected):
         ("www.t.me/durov", "@durov", "durov", "https://t.me/durov"),
         ("-1001629147115", -1001629147115, "c1629147115", "https://t.me/c/1629147115"),
         ("1629147115", 1629147115, "c1629147115", "https://t.me/c/1629147115"),
+        ("https://t.me/c/1629147115/5", -1001629147115, "c1629147115", "https://t.me/c/1629147115"),
+        ("t.me/c/1629147115", -1001629147115, "c1629147115", "https://t.me/c/1629147115"),
         ("https://t.me/s/durov", "@durov", "durov", "https://t.me/durov"),
         ("https://t.me/joinchat/AbC", "https://t.me/+AbC", "+AbC", "https://t.me/+AbC"),
         ("+AbCd", "https://t.me/+AbCd", "+AbCd", "https://t.me/+AbCd"),
@@ -281,6 +283,17 @@ def test_links_keep_channel_for_web_private_and_invite_links(tmp_path):
                       "https://t.me/foo": 2}
 
 
+def test_links_keep_dashes_in_invite_hashes(tmp_path):
+    # invite hashes are base64url: '-' is part of the hash, not the end of the link
+    text = ("https://t.me/+Zb-8yXhQ3WJkNWU6 https://t.me/+Zb-other "
+            "t.me/joinchat/AAAAAE-abc_d t.me/addlist/ab-CD")
+    pd.DataFrame({"Content": [text]}).to_parquet(tmp_path / "in.parquet")
+    links(str(tmp_path / "in.parquet"), str(tmp_path / "l"))
+    counts = dict(read_table(tmp_path / "l.xlsx").values)
+    assert counts == {"https://t.me/+Zb-8yXhQ3WJkNWU6": 1, "https://t.me/+Zb-other": 1,
+                      "https://t.me/+AAAAAE-abc_d": 1, "https://t.me/addlist/ab-CD": 1}
+
+
 @pytest.mark.parametrize("n_matches, files", [(3, ["f_unique.xlsx"]),
                                               (4, ["f_part_1.xlsx", "f_part_2.xlsx"])])
 def test_filter_file_split(tmp_path, n_matches, files):
@@ -385,6 +398,23 @@ def test_resolve_inputs_rejects_folder_without_parquet(tmp_path):
     (tmp_path / "x.xlsx").write_bytes(b"")
     with pytest.raises(SystemExit, match="No .parquet files"):
         resolve_inputs(str(tmp_path))
+
+
+def test_sample_keeps_rows_with_empty_category(tmp_path):
+    texts = [f"long enough text number {i} here" for i in range(6)]
+    pd.DataFrame({"id": range(6), "Content": texts, "Group": ["@a", None, "@b", None, "@a", "@b"]}
+                 ).to_parquet(tmp_path / "in.parquet")
+    sample(str(tmp_path / "in.parquet"), str(tmp_path / "s"), "Content", "Group", 10_000, 20)
+    assert sorted(read_table(tmp_path / "s.xlsx")["id"]) == list(range(6))
+
+
+def test_cli_missing_channels_file_is_a_clean_error(tmp_path):
+    from telescraper.cli import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["scrape", "--channels-file", str(tmp_path / "nope.txt"), "--date-min", "01.01.2024",
+              "--date-max", "02.01.2024", "--name", "x"])
+    assert isinstance(exc.value.code, str) and "--channels-file" in exc.value.code
 
 
 @pytest.mark.parametrize("cmd, flag", [("filter", "--max-rows-per-file"), ("sample", "--sample-size")])

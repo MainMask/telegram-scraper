@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import shlex
 import time
 from dataclasses import dataclass
@@ -249,6 +250,9 @@ def _channel_ref(raw: str) -> _ChannelRef:
     address it and how we render it. Numeric IDs (e.g. '-1001629147115', as shown
     by Telegram clients) become `t.me/c/<short_id>` links and a 'c<short_id>' slug."""
     s = raw.strip()
+    m = re.match(r"(?:https?://)?(?:www\.)?t\.me/c/(\d+)", s)
+    if m:  # a private-channel link: the same channel as its -100<id> numeric ID
+        s = f"-100{m[1]}"
     body = s[1:] if s.startswith("-") else s
     if body.isdigit():
         cid = int(s)
@@ -662,6 +666,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                             date_str = row["Date"]
 
                             now = time.monotonic() - start_time
+                            chan_elapsed = time.monotonic() - loop_start  # sess_ids is per channel too
                             if id_span > 0:                                # current channel fraction
                                 cf = min(max((id_hi - message.id) / id_span, 0.0), 1.0)
                             else:
@@ -669,8 +674,8 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                             overall = (i + cf) / n_channels
                             sess_ids = sess_start_id - message.id         # ids this process consumed
                             eta = ("estimating"
-                                   if not (id_span > 0 and sess_ids > 0 and now > 30)
-                                   else format_duration(max(message.id - id_lo, 0) * now / sess_ids))
+                                   if not (id_span > 0 and sess_ids > 0 and chan_elapsed > 30)
+                                   else format_duration(max(message.id - id_lo, 0) * chan_elapsed / sess_ids))
                             print(
                                 f"|{_progress_bar(overall)}| {overall * 100:5.1f}%  "
                                 f"ch {i + 1}/{n_channels} ({cf * 100:3.0f}%) "

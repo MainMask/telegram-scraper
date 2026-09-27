@@ -24,7 +24,10 @@ def _non_negative_int(value: str) -> int:
 
 def _read_channels(args) -> list[str]:
     if args.channels_file:
-        raw = Path(args.channels_file).read_text(encoding="utf-8")
+        try:
+            raw = Path(args.channels_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise SystemExit(f"--channels-file: {exc}")
     else:
         raw = args.channels
     channels = [c.strip() for c in re.split(r"[,\s]+", raw) if c.strip()]

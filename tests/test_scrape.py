@@ -886,6 +886,27 @@ def test_read_shards_stitches_mismatched_schemas(tmp_path):
     assert df.set_index("Message ID").loc[3, "Author"] == "Signed"
 
 
+def test_eta_uses_current_channel_time(fake_client, tmp_path, monkeypatch, capsys):
+    clock = [0.0]
+
+    def _monotonic():
+        clock[0] += 20  # every clock read moves time forward
+        return clock[0]
+
+    async def _sleep(*a, **k):
+        clock[0] += 10_000  # the 60s/channel pause: a long gap between the channels
+
+    monkeypatch.setattr(scrape.time, "monotonic", _monotonic)
+    monkeypatch.setattr(scrape.asyncio, "sleep", _sleep)
+    scrape.run(Credentials(1, "h"), _params(tmp_path, channels=["@a", "@b"],
+                                            with_participants=False))
+    etas = [line.split("ETA ")[1] for line in capsys.readouterr().out.splitlines()
+            if "| id 20 |" in line]
+    # both channels scrape the same ids at the same pace: the earlier channel's time
+    # must not inflate the second channel's ETA
+    assert len(etas) == 2 and etas[0] == etas[1] != "estimating"
+
+
 def test_until_snapshot_is_incremental(fake_client, tmp_path, monkeypatch):
     async def _nosleep(*a, **k):
         return None

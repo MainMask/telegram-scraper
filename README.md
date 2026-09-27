@@ -81,7 +81,8 @@ just means logging in again.
 **Session string instead of a file** — `telescraper login --string` asks for the code the
 same way but prints `TG_SESSION_STRING=...` instead of writing a `.session` file. Put that line
 in `.env`; when it is set, `login`, `scrape` and `verify` use it and ignore `--session`. The string gives
-full access to the account — treat it like a password.
+full access to the account — treat it like a password. For long runs prefer the `.session` file: a
+string session keeps every user it meets in memory (~260 bytes each) and searches them linearly.
 
 ---
 

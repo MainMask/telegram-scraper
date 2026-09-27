@@ -37,12 +37,13 @@ def _count_comments(comments_list) -> int:
 
 
 def _parse_comments_list(x):
-    """Parsed Comments List for a readable xlsx; a cell that isn't valid JSON
+    """Comments List re-dumped as JSON without \\uXXXX escapes, so the xlsx is readable
+    and still valid for `comments` / `participants`; a cell that isn't valid JSON
     (e.g. truncated by Excel's 32k limit) is kept as the raw string."""
     if pd.isnull(x):
         return x
     try:
-        return json.loads(x)
+        return json.dumps(json.loads(x), ensure_ascii=False)
     except json.JSONDecodeError:
         return x
 
@@ -306,7 +307,7 @@ def filter_keywords(input_path: str, output: str, content_col: str, keywords: li
     if clash:
         raise SystemExit(f"keyword(s) {clash} match existing column names; rename or drop them")
     for kw in tqdm(keywords, desc="Keyword columns"):
-        df[kw] = df[content_col].astype(str).apply(lambda x: 1 if kw in x else 0)
+        df[kw] = df[content_col].fillna("").astype(str).apply(lambda x: 1 if kw in x else 0)
     df["Keyword_Count"] = df[keywords].sum(axis=1)
     filtered = df[df["Keyword_Count"] > 0]
     print(f"Matched rows: {len(filtered)}")
@@ -325,7 +326,7 @@ def links(input_path: str, output: str) -> None:
     """Extract, normalise and count t.me links found in Content (snowball sampling)."""
     df = read_table(input_path)
     _require_columns(df, ["Content"], input_path)
-    found = df["Content"].astype(str).apply(_TME_RE.findall)
+    found = df["Content"].fillna("").astype(str).apply(_TME_RE.findall)
     normalised = []
     for sublist in tqdm(found.tolist(), desc="Normalising links"):
         for link in sublist:

@@ -377,3 +377,30 @@ def test_cli_rejects_non_positive_sizes(cmd, flag):
 ])
 def test_parse_date_end_of_day_only_for_date_only_input(value, expected):
     assert parse_date(value, end_of_day=True) == expected
+
+
+def test_filter_keeps_comments_list_as_readable_json(tmp_path):
+    # an older file: Cyrillic escaped as \uXXXX by json.dumps' default ensure_ascii
+    comments = json.dumps([{"Type": "comment", "Comment Author ID": 5,
+                            "Comment Author Access Hash": 1, "Comment Content": "привет"}])
+    pd.DataFrame({"Group": ["@a"], "Message ID": ["1"], "Content": ["foo"],
+                  "Comments List": [comments]}).to_parquet(tmp_path / "in.parquet")
+    filter_keywords(str(tmp_path / "in.parquet"), str(tmp_path / "f"), "Content", ["foo"], 10)
+
+    cell = pd.read_excel(tmp_path / "f_unique.xlsx")["Comments List"][0]
+    assert "привет" in cell and json.loads(cell)[0]["Comment Content"] == "привет"
+    participants(str(tmp_path / "f_unique.xlsx"), str(tmp_path / "p.parquet"), reactors="")
+    assert list(read_table(tmp_path / "p.parquet")["ID"]) == [5]  # usable by the next command
+
+
+def test_links_and_filter_handle_empty_content_after_xlsx(tmp_path):
+    # a media-only post has Content "" -> the xlsx cell reads back as NaN
+    df = pd.DataFrame({"Group": ["@a", "@a"], "Message ID": ["2", "1"],
+                       "Content": ["see t.me/foo", ""]})
+    src = str(save_table(df, tmp_path / "posts", "excel"))
+
+    links(src, str(tmp_path / "l"))
+    assert pd.read_excel(tmp_path / "l.xlsx").to_dict("records") == [
+        {"Telegram Link": "https://t.me/foo", "Frequency": 1}]
+    filter_keywords(src, str(tmp_path / "f"), "Content", ["foo"], 10)
+    assert len(pd.read_excel(tmp_path / "f_unique.xlsx")) == 1

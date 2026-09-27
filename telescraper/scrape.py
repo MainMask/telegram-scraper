@@ -60,7 +60,7 @@ CLIENT_KWARGS = dict(flood_sleep_threshold=FLOOD_SLEEP_THRESHOLD,
 
 # In-run automatic resume: restart a channel from the last checkpointed message
 # id when a connection error escapes iter_messages.
-RESUME_MAX_ATTEMPTS = 5    # per-channel restarts before re-raising
+RESUME_MAX_ATTEMPTS = 5    # restarts in a row without progress before re-raising
 RESUME_BASE_WAIT = 30      # wait = min(RESUME_BASE_WAIT * attempt, RESUME_MAX_WAIT)
 RESUME_MAX_WAIT = 300
 
@@ -618,6 +618,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
             attempt = 0
             flood_attempts = 0
             flood_last_id = None  # cursor at the previous FloodWaitError
+            net_last_id = None    # cursor at the previous dropped connection
             done_channel = False
             channel_closed = False
             try:
@@ -712,6 +713,9 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                         await _reconnect(client)
                         continue
                     except (*NET_ERRORS, *RETRYABLE_RPC) as exc:
+                        if last_id != net_last_id:  # progress since the last drop: count afresh
+                            attempt = 0
+                        net_last_id = last_id
                         attempt += 1
                         _write_checkpoint(i, last_id)
                         if attempt > RESUME_MAX_ATTEMPTS:
@@ -751,6 +755,10 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                     failed.append((channel, f"{type(exc).__name__}: {exc}"))
                     # move past it like a finished channel, so Ctrl-C/--resume don't retry it
                     _write_checkpoint(i + 1, 0)
+                    if shard_index > snapshot_from:  # rows scraped before the error: its own snapshot
+                        save_table(_read_shards(ckpt_dir, "posts", start=snapshot_from),
+                                   partial_dir / f"{ref.slug}_until_{t_index:05}", "parquet")
+                        snapshot_from = shard_index
                     channel_closed = True
 
             # be gentle: at least 60s per channel

@@ -1272,3 +1272,51 @@ def test_persistent_500_escapes_telethon_as_retryable(monkeypatch):
     monkeypatch.setattr(asyncio, "sleep", lambda *_a, **_k: real_sleep(0))
     with pytest.raises(scrape.RETRYABLE_RPC):
         asyncio.run(go())
+
+
+class DropAfterEveryPostClient(FakeClient):
+    """Loses the connection right after each in-window post: progress between every drop."""
+
+    def _main_gen(self, offset_id):
+        async def gen():
+            for m in _main_messages():
+                if offset_id and m.id >= offset_id:
+                    continue
+                yield m
+                if m.id in (30, 20):
+                    raise ConnectionError("drop")
+        return gen()
+
+
+def test_connection_retries_reset_after_progress(monkeypatch, tmp_path):
+    monkeypatch.setattr(scrape, "TelegramClient", DropAfterEveryPostClient)
+    monkeypatch.setattr(scrape, "RESUME_BASE_WAIT", 0)
+    monkeypatch.setattr(scrape, "RESUME_MAX_ATTEMPTS", 1)  # two drops, but never two in a row
+    path = scrape.run(Credentials(1, "h"), _params(tmp_path, with_participants=False))
+    assert list(pd.read_parquet(path)["Message ID"]) == ["30", "20"]
+
+
+def test_failed_channel_gets_its_own_snapshot(monkeypatch, tmp_path):
+    class MidFailClient(FakeClient):
+        def _main_gen(self, offset_id):
+            if type(self).calls[-1][0] != "@a":
+                return super()._main_gen(offset_id)
+            async def gen():
+                for m in _main_messages()[:2]:  # 40 (too new), 30 (saved)
+                    yield m
+                raise RuntimeError("boom")
+            return gen()
+
+    async def _nosleep(*a, **k):
+        return None
+
+    monkeypatch.setattr(scrape, "TelegramClient", MidFailClient)
+    monkeypatch.setattr(scrape.asyncio, "sleep", _nosleep)
+    path = scrape.run(Credentials(1, "h"), _params(tmp_path, channels=["@a", "@b"],
+                                                   with_participants=False))
+    a = pd.read_parquet(next(_partial(tmp_path).glob("a_until_*.parquet")))
+    assert a[["Group", "Message ID"]].values.tolist() == [["@a", 30]]
+    b = pd.read_parquet(next(_partial(tmp_path).glob("b_until_*.parquet")))
+    assert set(b["Group"]) == {"@b"}
+    posts = pd.read_parquet(path)
+    assert ["@a", "30"] in posts[["Group", "Message ID"]].values.tolist()

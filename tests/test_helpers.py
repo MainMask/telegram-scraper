@@ -108,6 +108,16 @@ def test_save_table_keeps_dotted_name(tmp_path):
     assert read_table(out)["a"].tolist() == [1]
 
 
+def test_save_table_warns_when_excel_would_truncate(tmp_path, capsys):
+    save_table(pd.DataFrame({"a": ["short"]}), tmp_path / "ok", "excel")
+    assert "WARNING" not in capsys.readouterr().out
+
+    df = pd.DataFrame({"Comments List": ["x" * 40_000]})  # str dtype on pandas 3, object on 2
+    with pytest.warns(UserWarning):  # openpyxl truncates the long cell to 32767 chars
+        save_table(df, tmp_path / "long", "excel")
+    assert "Excel truncates at 32767" in capsys.readouterr().out
+
+
 def test_combine_errors_on_empty_inputs(tmp_path):
     pd.DataFrame().to_parquet(tmp_path / "empty.parquet")
     with pytest.raises(SystemExit):
@@ -117,6 +127,7 @@ def test_combine_errors_on_empty_inputs(tmp_path):
 def _posts_with_comments(tmp_path, name="posts.parquet"):
     comment = {
         "Type": "comment", "Comment Author ID": 5, "Comment Author Username": "bob",
+        "Comment Author Access Hash": -8712345678901234567,
         "Comment Author Name": "Bob B", "Comment Content": "hi",
         "Comment Date": "2025-01-01 00:00:00", "Comment Message ID": 100,
         "Comment Author": None, "Comment Views": None, "Comment Reactions": "",
@@ -145,8 +156,32 @@ def test_explode_comments(tmp_path):
     row = r[r["Comment Author ID"] == 5].iloc[0]
     assert row["Comment Author Username"] == "bob"
     assert row["Comment Author Name"] == "Bob B"
+    assert row["Comment Author Access Hash"] == -8712345678901234567  # exact int64
+    assert pd.isna(r[r["Comment Author ID"].isna()].iloc[0]["Comment Author Access Hash"])
     assert row["Post ID"] == 10
     assert row["Post Url"] == "https://t.me/c/1/10"
+
+
+def test_excel_keeps_access_hash_exact(tmp_path):
+    from openpyxl import load_workbook
+
+    df = pd.DataFrame({"ID": [1, 2],
+                       "Access Hash": pd.array([-8712345678901234567, None], dtype="Int64")})
+    out = save_table(df, tmp_path / "people", "excel")
+    assert load_workbook(out).active["B2"].value == "-8712345678901234567"  # text, not rounded
+    back = read_table(out)
+    assert str(back["Access Hash"].dtype) == "Int64"
+    assert back["Access Hash"][0] == -8712345678901234567
+    assert pd.isna(back["Access Hash"][1])
+
+
+def test_csv_keeps_access_hash_exact(tmp_path):
+    df = pd.DataFrame({"ID": [1, 2],
+                       "Access Hash": pd.array([-8712345678901234567, None], dtype="Int64")})
+    back = read_table(save_table(df, tmp_path / "people", "csv"))
+    assert str(back["Access Hash"].dtype) == "Int64"
+    assert back["Access Hash"][0] == -8712345678901234567  # not rounded via float64
+    assert pd.isna(back["Access Hash"][1])
 
 
 def test_explode_comments_errors_when_empty(tmp_path):
@@ -160,10 +195,11 @@ def test_explode_comments_errors_when_empty(tmp_path):
 def test_participants_merges_commenters_and_reactors(tmp_path):
     src = _posts_with_comments(tmp_path, "x_posts.parquet")
     pd.DataFrame({
-        "Reactor ID": [5, 5, 9, -1001490082514],
-        "Reactor Username": ["", "", "ann", "[channel]"],
-        "Reactor Name": ["Bob B", "Bob B", "Ann A", "Some Chan"],
-        "Reaction": ["👍", "🔥", "👍", "❤"],
+        "Reactor ID": [5, 5, 9, 12, -1001490082514],
+        "Reactor Username": ["", "", "ann", "nohash", "[channel]"],
+        "Reactor Access Hash": pd.array([None, None, 42, None, None], dtype="Int64"),
+        "Reactor Name": ["Bob B", "Bob B", "Ann A", "No Hash", "Some Chan"],
+        "Reaction": ["👍", "🔥", "👍", "👍", "❤"],
     }).to_parquet(tmp_path / "x_reactors.parquet")
     (tmp_path / "other_reactors.parquet").write_bytes(b"unrelated")  # must NOT be picked up
 
@@ -171,8 +207,12 @@ def test_participants_merges_commenters_and_reactors(tmp_path):
     participants(str(src), str(out))
     p = read_table(out).set_index("ID")
 
-    assert set(p.index) == {5, 9}  # anonymous comment (ID None) + channel (negative ID) dropped
-    assert list(read_table(out).columns) == ["ID", "Username", "Name", "Comments", "Reactions", "Total"]
+    # anonymous comment (ID None), channel (negative ID) and user 12 (no access hash) dropped
+    assert set(p.index) == {5, 9}
+    assert list(read_table(out).columns) == ["ID", "Username", "Access Hash", "Name",
+                                             "Comments", "Reactions", "Total"]
+    assert p.loc[5, "Access Hash"] == -8712345678901234567  # exact int64, from the comment
+    assert p.loc[9, "Access Hash"] == 42
     assert (p.loc[5, "Comments"], p.loc[5, "Reactions"], p.loc[5, "Total"]) == (1, 2, 3)
     assert p.loc[5, "Username"] == "bob"          # from the comment
     assert p.loc[5, "Name"] == "Bob B"
@@ -275,7 +315,7 @@ def test_participants_skips_excel_truncated_comments_list(tmp_path, capsys):
     long_thread = json.dumps([{"Type": "comment", "Comment Author ID": i,
                                "Comment Content": "Привет мир " * 30} for i in range(120)])
     ok_thread = json.dumps([{"Type": "comment", "Comment Author ID": 5,
-                             "Comment Author Username": "bob"}])
+                             "Comment Author Username": "bob", "Comment Author Access Hash": 1}])
     df = pd.DataFrame({"Group": ["@a", "@a"], "Message ID": [1, 2],
                        "Comments List": [long_thread, ok_thread]})
     with pytest.warns(UserWarning):  # openpyxl truncates the long cell to 32767 chars

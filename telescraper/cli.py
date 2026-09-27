@@ -178,10 +178,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "(re-run the same command plus this flag)")
     s.add_argument("--no-comments", action="store_true", help="skip fetching per-message comments (much faster)")
     s.add_argument("--no-participants", action="store_true",
-                   help="skip building the <name>_participants table (id + username + name of "
+                   help="skip building the <name>_participants table (id + username + access hash + name of "
                         "commenters/reactors)")
     s.add_argument("--no-reactors", action="store_true",
-                   help="skip fetching per-user reaction lists (id + username + emoji) into a "
+                   help="skip fetching per-user reaction lists (id + username + access hash + emoji) into a "
                         "separate <name>_reactors file. Collected by default but slow: one API "
                         "call per reacted message. Telegram refuses this for broadcast-channel "
                         "posts (skipped), so it mainly captures reactions on the comments.")
@@ -206,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
     cm.set_defaults(func=cmd_comments)
 
     pt = sub.add_parser("participants",
-                        help="unique ID + username + name of everyone who commented or reacted")
+                        help="unique ID + username + access hash + name of everyone who commented or reacted")
     pt.add_argument("--input", required=True, help="a scraped posts parquet/xlsx (needs Comments List)")
     pt.add_argument("--output", required=True)
     pt.add_argument("--reactors", help="reactors file (default: the <name>_reactors file next to --input)")

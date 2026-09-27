@@ -99,7 +99,7 @@ telescraper <command> [options]        # or:  python -m telescraper <command>
 | `read`    | print the head of a data file, optionally convert it |
 | `combine` | merge many `.parquet` files, drop duplicates, recount comments |
 | `comments`| flatten `Comments List` into a table with one row per comment |
-| `participants`| unique `ID` + `username` + `name` of everyone who commented or reacted |
+| `participants`| unique `ID` + `username` + `access hash` + `name` of everyone who commented or reacted |
 | `summary` | per-group monthly tables (contents / comments / total) |
 | `sample`  | proportional per-category sample to `.xlsx` |
 | `filter`  | keep rows matching keywords, add one 0/1 column per keyword |
@@ -142,7 +142,7 @@ per-post comment fetch), `--no-reactors` (see below), `--no-participants` (skip 
 `--resume` (see *Interruptions* below).
 
 By default the run also writes a separate `<name>_reactors` file with one
-row per *(user, message, reaction)*: who (`id` + `username`) put which emoji, and on what.
+row per *(user, message, reaction)*: who (`id` + `username` + access hash) put which emoji, and on what.
 It is **slow** — one extra API call per message that has reactions. Telegram
 refuses the reactors list for **broadcast-channel posts** (to prevent de-anonymisation),
 so those are skipped — without even the extra request when the channel reports its
@@ -176,10 +176,10 @@ collected):
   Normalised on the way out (like `combine`): duplicates dropped on `Group` + `Message ID`,
   a `Comments` count column added, `Date` parsed to a real datetime, rows sorted newest-first.
 - `<name>_participants_<from>-<to>.<ext>` — unless `--no-participants`; one row per unique person who
-  commented or reacted: `ID, Username, Name, Comments, Reactions, Total`.
+  commented or reacted: `ID, Username, Access Hash, Name, Comments, Reactions, Total`.
   Skipped with a note when there is nothing to build.
 - `<name>_reactors_<from>-<to>.<ext>` — unless `--no-reactors`; one row per *(user, message, reaction)*:
-  `Type, Target, Group, Message ID, Post ID, Url, Reactor ID, Reactor Username, Reactor Name, Reaction, Date`
+  `Type, Target, Group, Message ID, Post ID, Url, Reactor ID, Reactor Username, Reactor Access Hash, Reactor Name, Reaction, Date`
 - `<name>_partial/` — `<slug>_until_NNNNN` snapshots written after each channel
   (post-shaped, so `combine --input <name>_partial` merges just these). The resume
   machinery lives in `<name>_partial/checkpoint/` — append-only
@@ -224,14 +224,22 @@ telescraper read     output/unified.parquet --head 20 --to xlsx
 
 The `Comments List` column holds comments as a JSON string — `telescraper comments`
 explodes it into a flat table (one row per comment, with `Comment Author ID` /
-`Comment Author Username` / `Comment Author Name`), `--format excel` for a spreadsheet.
+`Comment Author Username` / `Comment Author Access Hash` / `Comment Author Name`), `--format excel` for a spreadsheet.
 
 `telescraper participants` goes further: it merges the commenters with the
 `<name>_reactors` file it finds next to `--input` and writes one row per
-person — `ID, Username, Name, Comments, Reactions, Total`. `scrape` runs this
+person — `ID, Username, Access Hash, Name, Comments, Reactions, Total`. `scrape` runs this
 step for you (`<name>_participants`) unless you pass `--no-participants`. `Username` / `Name` are
 blank when Telegram has none for that account (only the numeric `ID` identifies them);
 `Name` is only populated for data scraped after this feature was added.
+
+`Access Hash` (also `Reactor Access Hash` in the reactors file and `Comment Author Access Hash`
+in each comment) is the user's Telegram `access_hash`: with the `ID` it forms an
+`InputPeerUser`, so the user can be addressed without resolving them again. It only works for
+the account that scraped it. People without a usable hash are left out of the participants
+table: those Telegram sent none for, and "min" users whose hash can't be used directly. Files
+scraped before this column existed therefore produce an empty table. In `.xlsx` the hash is
+stored as text, so Excel keeps all 19 digits.
 
 ### Verify
 
@@ -263,7 +271,7 @@ the keyword is reported as missed.
 plus a `Comments` count column added when the file is normalised on write.
 
 Each entry inside the `Comments List` JSON carries `Comment Author ID`,
-`Comment Author Username` **and** `Comment Author Name` (`""` if the commenter
+`Comment Author Username`, `Comment Author Access Hash` **and** `Comment Author Name` (`""` if the commenter
 has none, `[channel]` / `[anonymous]` when the reply was sent by a channel or
 anonymously).
 
@@ -294,6 +302,7 @@ telescraper/
   cli.py         argparse entry point + sub-command dispatch
   menu.py        interactive input()-based wizard over the CLI flags
   config.py      load TG_* credentials from .env
+  login.py       one-time authorisation: save the session (file or string)
   scrape.py      async scraper (asyncio.run)
   verify.py      cross-check a scrape against the live channel for missed posts
   analysis.py    combine / comments / participants / summary / sample / filter / links

@@ -35,13 +35,24 @@ _EXCEL_CELL_LIMIT = 32_767
 
 def _warn_if_excel_would_truncate(df: pd.DataFrame) -> None:
     for col in df.columns:
-        if df[col].dtype == object:
+        if df[col].dtype == object or pd.api.types.is_string_dtype(df[col].dtype):  # "str" on pandas 3
             longest = df[col].dropna().astype(str).str.len().max()
             if pd.notna(longest) and longest > _EXCEL_CELL_LIMIT:
                 print(
                     f"  ! WARNING: column {col!r} has cells up to {longest} chars; "
                     f"Excel truncates at {_EXCEL_CELL_LIMIT}. Use --format parquet to keep full data."
                 )
+
+
+def _is_hash_column(col) -> bool:
+    return str(col).endswith("Access Hash")
+
+
+def _hashes_to_int64(df: pd.DataFrame, cols: list) -> pd.DataFrame:
+    """Hash columns read as str back to exact Int64 (see save_table / read_table)."""
+    for c in cols:
+        df[c] = pd.array([None if pd.isna(v) else int(v) for v in df[c]], dtype="Int64")
+    return df
 
 
 def save_table(df: pd.DataFrame, path: str | Path, fmt: str | None = None) -> Path:
@@ -56,6 +67,8 @@ def save_table(df: pd.DataFrame, path: str | Path, fmt: str | None = None) -> Pa
     path.parent.mkdir(parents=True, exist_ok=True)
     if ext == "xlsx":
         _warn_if_excel_would_truncate(df)
+        # Excel keeps 15 significant digits; a 19-digit access hash survives only as text
+        df = df.assign(**{c: df[c].astype("string") for c in df.columns if _is_hash_column(c)})
         df.to_excel(path, index=False, engine="openpyxl")
     elif ext == "parquet":
         df.to_parquet(path, index=False)
@@ -70,9 +83,13 @@ def read_table(path: str | Path) -> pd.DataFrame:
     if suffix == ".parquet":
         return pd.read_parquet(path)
     if suffix == ".xlsx":
-        return pd.read_excel(path)
+        # hashes are stored as text (see save_table); read them as str, or pandas
+        # parses the digits into float64 and rounds them
+        hash_cols = [c for c in pd.read_excel(path, nrows=0).columns if _is_hash_column(c)]
+        return _hashes_to_int64(pd.read_excel(path, dtype={c: str for c in hash_cols}), hash_cols)
     if suffix == ".csv":
-        return pd.read_csv(path)
+        hash_cols = [c for c in pd.read_csv(path, nrows=0).columns if _is_hash_column(c)]
+        return _hashes_to_int64(pd.read_csv(path, dtype={c: str for c in hash_cols}), hash_cols)
     raise ValueError(f"Unsupported file type: {path.name}")
 
 

@@ -84,11 +84,11 @@ def _scrape_argv(p: Prompt) -> list[str]:
     _opt(argv, "--timeout", p.text("Timeout seconds (0 = no limit)", "0"), "0")
     _opt(argv, "--out-dir", p.text("Output directory", "output"), "output")
     argv += ["--format", p.choice("Format", ["parquet", "excel"], "parquet")]
-    if not p.yes_no("Fetch comments (commenter id + username + name)?", True):
+    if not p.yes_no("Fetch comments (commenter id + username + access hash + name)?", True):
         argv.append("--no-comments")
-    if not p.yes_no("Collect reactors (id + username; slow, one API call per reacted message)?", True):
+    if not p.yes_no("Collect reactors (id + username + access hash; slow, one API call per reacted message)?", True):
         argv.append("--no-reactors")
-    if not p.yes_no("Also build the participants table (id + username + name)?", True):
+    if not p.yes_no("Also build the participants table (id + username + access hash + name)?", True):
         argv.append("--no-participants")
     if p.yes_no("Resume an interrupted run with this name?", False):
         argv.append("--resume")
@@ -218,7 +218,7 @@ _ACTIONS = {
     "2": ("read", "preview a data file, optionally convert it", _read_argv),
     "3": ("combine", "merge .parquet files, drop duplicates", _combine_argv),
     "4": ("comments", "flatten Comments List into one row per comment", _comments_argv),
-    "5": ("participants", "ID + username + name of commenters & reactors", _participants_argv),
+    "5": ("participants", "ID + username + access hash + name of commenters & reactors", _participants_argv),
     "6": ("summary", "per-group monthly tables", _summary_argv),
     "7": ("sample", "proportional per-category sample to .xlsx", _sample_argv),
     "8": ("filter", "keep rows matching keywords", _filter_argv),

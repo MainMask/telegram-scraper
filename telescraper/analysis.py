@@ -138,6 +138,7 @@ def explode_comments(input_path: str, output: str, fmt: str = "parquet") -> None
             "Post Url": post.get("Url", ""),
             "Comment Author ID": c.get("Comment Author ID"),
             "Comment Author Username": c.get("Comment Author Username", ""),
+            "Comment Author Access Hash": c.get("Comment Author Access Hash"),
             "Comment Author Name": c.get("Comment Author Name", ""),
             "Comment Content": c.get("Comment Content", ""),
             "Comment Date": c.get("Comment Date", ""),
@@ -152,6 +153,9 @@ def explode_comments(input_path: str, output: str, fmt: str = "parquet") -> None
     if not rows:
         raise SystemExit(f"{input_path}: no comments in 'Comments List'.")
     out = pd.DataFrame(rows)
+    # int64 + None would become float64 and corrupt the hash; rebuild from the raw values
+    out["Comment Author Access Hash"] = pd.array(
+        [r["Comment Author Access Hash"] for r in rows], dtype="Int64")
     for col in ("Comment Author ID", "Comment Message ID", "Comment Views", "Comment Shares"):
         out[col] = pd.to_numeric(out[col], errors="coerce").astype("Int64")  # keep ints, allow <NA>
     print(f"Saved: {_save(out, output, fmt)} ({len(rows)} comments)")
@@ -178,7 +182,8 @@ def _sibling_reactors(input_path: str) -> list[Path]:
 
 def participants(input_path: str, output: str, reactors: str | None = None,
                  fmt: str = "parquet") -> None:
-    """One row per unique person who commented or reacted: ID, username, name, counts.
+    """One row per unique person who commented or reacted: ID, username, access hash,
+    name, counts. People with no access hash are skipped.
 
     reactors: a path to the reactors file; None auto-discovers the sibling
     <name>_reactors next to input_path; "" means "this run has no reactors file"
@@ -189,6 +194,7 @@ def participants(input_path: str, output: str, reactors: str | None = None,
 
     rows = [
         {"ID": c.get("Comment Author ID"), "Username": c.get("Comment Author Username") or "",
+         "Access Hash": c.get("Comment Author Access Hash"),
          "Name": c.get("Comment Author Name") or "", "Comments": 1, "Reactions": 0}
         for _post, c in _comment_pairs(df)
     ]
@@ -202,9 +208,12 @@ def participants(input_path: str, output: str, reactors: str | None = None,
         rdf = read_table(rf)
         _require_columns(rdf, ["Reactor ID", "Reactor Username"], str(rf))
         names = rdf["Reactor Name"] if "Reactor Name" in rdf.columns else [""] * len(rdf)
+        hashes = (rdf["Reactor Access Hash"] if "Reactor Access Hash" in rdf.columns
+                  else [None] * len(rdf))
         rows += [
-            {"ID": rid, "Username": ru or "", "Name": rn or "", "Comments": 0, "Reactions": 1}
-            for rid, ru, rn in zip(rdf["Reactor ID"], rdf["Reactor Username"], names)
+            {"ID": rid, "Username": ru or "", "Access Hash": rh, "Name": rn or "",
+             "Comments": 0, "Reactions": 1}
+            for rid, ru, rh, rn in zip(rdf["Reactor ID"], rdf["Reactor Username"], hashes, names)
         ]
         print(f"  + reactors from {rf.name}")
 
@@ -212,6 +221,8 @@ def participants(input_path: str, output: str, reactors: str | None = None,
         raise SystemExit(f"{input_path}: no commenters or reactors found.")
 
     p = pd.DataFrame(rows)
+    # int64 + None would become float64 and corrupt the hash; rebuild from the raw values
+    p["Access Hash"] = pd.array([r["Access Hash"] for r in rows], dtype="Int64")
     p["ID"] = pd.to_numeric(p["ID"], errors="coerce").astype("Int64")
     p = p[p["ID"].notna() & (p["ID"] > 0)]  # drop anonymous + channel/chat entities (negative IDs)
     p["Username"] = p["Username"].apply(
@@ -221,10 +232,12 @@ def participants(input_path: str, output: str, reactors: str | None = None,
 
     agg = p.groupby("ID").agg(
         Username=("Username", _first_nonempty),
+        **{"Access Hash": ("Access Hash", "first")},
         Name=("Name", _first_nonempty),
         Comments=("Comments", "sum"),
         Reactions=("Reactions", "sum"),
     ).reset_index()
+    agg = agg[agg["Access Hash"].notna()]  # no access_hash -> skip the user
     agg["Total"] = agg["Comments"] + agg["Reactions"]
     agg = agg.sort_values("Total", ascending=False, ignore_index=True)
 

@@ -140,6 +140,9 @@ def _consolidate_reactors(ckpt_dir: Path, dest: Path) -> tuple[Path, int]:
     try:
         for p in _shard_paths(ckpt_dir, "reactors"):
             part = pd.read_parquet(p).drop_duplicates(subset=REACTOR_DEDUP_KEY)
+            if "Reactor Access Hash" not in part.columns:  # shard from before the column
+                part.insert(part.columns.get_loc("Reactor Username") + 1, "Reactor Access Hash",
+                            pd.array([None] * len(part), dtype="Int64"))
             msg_keys = list(zip(part["Group"].astype(str), part["Target"], part["Message ID"]))
             fresh = [k not in seen for k in msg_keys]
             part = part[fresh]
@@ -315,6 +318,18 @@ def _sender_username(msg) -> str:
     return "[channel]"
 
 
+def _user_access_hash(entity) -> int | None:
+    """access_hash of a full User; None otherwise. A "min" User's hash is not
+    usable in InputPeerUser, so it counts as missing."""
+    if isinstance(entity, User) and not entity.min:
+        return entity.access_hash
+    return None
+
+
+def _sender_access_hash(msg) -> int | None:
+    return _user_access_hash(getattr(msg, "sender", None))
+
+
 def _entity_name(entity) -> str:
     """Display name: a User's first + last name, else a Channel/Chat title; '' if unknown."""
     if entity is None:
@@ -353,7 +368,9 @@ async def _collect_reactors(client, peer, ref: _ChannelRef, post_id: int, msg, t
                 GetMessageReactionsListRequest(peer=peer, id=msg.id, limit=100, offset=offset)
             )
             await asyncio.sleep(REACTOR_CALL_DELAY)
-            entities = {e.id: e for e in (*res.users, *res.chats)}
+            # separate maps: a user and a channel can share the same bare id
+            users = {u.id: u for u in res.users}
+            chats = {c.id: c for c in res.chats}
             for pr in res.reactions:
                 peer_id = pr.peer_id
                 eid = (
@@ -361,11 +378,12 @@ async def _collect_reactors(client, peer, ref: _ChannelRef, post_id: int, msg, t
                     or getattr(peer_id, "channel_id", None)
                     or getattr(peer_id, "chat_id", None)
                 )
-                ent = entities.get(eid)
+                ent = (users if isinstance(peer_id, PeerUser) else chats).get(eid)
                 if isinstance(peer_id, PeerUser):
                     rid, uname = peer_id.user_id, (getattr(ent, "username", "") or "")
+                    ahash = _user_access_hash(ent)
                 else:  # PeerChannel / PeerChat
-                    rid, uname = utils.get_peer_id(peer_id), "[channel]"
+                    rid, uname, ahash = utils.get_peer_id(peer_id), "[channel]", None
                 rows.append(
                     {
                         "Type": "reactor",
@@ -376,6 +394,7 @@ async def _collect_reactors(client, peer, ref: _ChannelRef, post_id: int, msg, t
                         "Url": url,
                         "Reactor ID": rid,
                         "Reactor Username": uname,
+                        "Reactor Access Hash": ahash,
                         "Reactor Name": _entity_name(ent),
                         "Reaction": _reaction_emoji(pr.reaction),
                         "Date": pr.date.strftime("%Y-%m-%d %H:%M:%S") if pr.date else "",
@@ -413,6 +432,7 @@ async def _collect_comments(
                     "Comment Group": f"@{ref.slug}",
                     "Comment Author ID": c.sender_id,
                     "Comment Author Username": _sender_username(c),
+                    "Comment Author Access Hash": _sender_access_hash(c),
                     "Comment Author Name": _sender_name(c),
                     "Comment Content": c.text or "",
                     "Comment Date": c.date.strftime("%Y-%m-%d %H:%M:%S"),
@@ -510,7 +530,11 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
             data.clear()
             wrote = True
         if reactors:
-            _atomic_parquet(pd.DataFrame(reactors),
+            rdf = pd.DataFrame(reactors)
+            # int64 + None would become float64 and corrupt the hash; keep a stable type
+            rdf["Reactor Access Hash"] = pd.array(
+                [r["Reactor Access Hash"] for r in reactors], dtype="Int64")
+            _atomic_parquet(rdf,
                             ckpt_dir / f"reactors_part_{shard_index:05}.parquet")
             reactors.clear()
             wrote = True
@@ -568,6 +592,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
     i, last_id = resume_channel_index, resume_last_id  # for the Ctrl-C handler below
     snapshot_from = 0  # first shard index not yet written to an `_until_` snapshot
     dialogs_loaded = False
+    failed: list[tuple[str, str]] = []  # (channel, error) of channels cut short by an error
     channel_closed = False  # the channel's final checkpoint is written; Ctrl-C must not roll it back
     try:
         for i, channel in enumerate(params.channels):
@@ -705,6 +730,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                 raise
             except Exception as exc:
                 print(f"{channel} error: {exc}")
+                failed.append((channel, str(exc)))
 
             # be gentle: at least 60s per channel
             spent = time.monotonic() - loop_start
@@ -729,6 +755,11 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
     print(SEP)
     print(f"Concluded: {t_index:05} posts scraped")
     print(SEP)
+    if failed:  # easy to miss mid-log on a long run; the checkpoint is gone after this
+        print(f"  ! {len(failed)} channel(s) stopped on an error and are incomplete - "
+              f"re-scrape them separately:")
+        for channel, err in failed:
+            print(f"    {channel}: {err}")
     return posts_df
 
 

@@ -51,6 +51,9 @@ def _msg(mid, date, text, *, replies=0, empty_thread=False, custom_reaction=Fals
     )
 
 
+_BOB_HASH = -8712345678901234567  # beyond float64's exact range
+
+
 def _reactions_list_response():
     """A fake messages.MessageReactionsList: one user + one channel reactor."""
     return types.SimpleNamespace(
@@ -66,7 +69,7 @@ def _reactions_list_response():
                 reaction=ReactionEmoji(emoticon="👍"),
             ),
         ],
-        users=[User(id=777, username="bob", first_name="Bob", last_name="Ivanov")],
+        users=[User(id=777, access_hash=_BOB_HASH, username="bob", first_name="Bob", last_name="Ivanov")],
         chats=[Channel(id=888, title="Disc Grp", photo=None, date=None)],
         next_offset=None,
         count=2,
@@ -87,7 +90,7 @@ def _thread_replies(reply_to):
         return []
     return [
         _msg(999, datetime(2024, 6, 5, tzinfo=timezone.utc), "a reply",
-             sender=User(id=777, username="bob", first_name="Bob", last_name="Ivanov")),
+             sender=User(id=777, access_hash=_BOB_HASH, username="bob", first_name="Bob", last_name="Ivanov")),
         _msg(998, datetime(2024, 6, 5, tzinfo=timezone.utc), "anon reply",
              sender=Channel(id=888, title="disc", photo=None, date=None), reacts=False),
     ]
@@ -253,12 +256,14 @@ def test_scrape_end_to_end(fake_client, tmp_path, capsys):
     assert '"Comment Author Username": "bob"' in df.iloc[1]["Comments List"]
     assert '"Comment Author Name": "Bob Ivanov"' in df.iloc[1]["Comments List"]
     assert '"Comment Author Username": "[channel]"' in df.iloc[1]["Comments List"]  # anon reply
+    assert f'"Comment Author Access Hash": {_BOB_HASH}' in df.iloc[1]["Comments List"]
     assert df.iloc[0]["Comments List"] == "[]"           # post 30 had no thread
 
     people = pd.read_parquet(_out(tmp_path, "participants")).set_index("ID")
     assert people.loc[777, "Username"] == "bob"
     assert people.loc[777, "Name"] == "Bob Ivanov"
     assert people.loc[777, "Comments"] == 1
+    assert people.loc[777, "Access Hash"] == _BOB_HASH
 
 
 def test_progress_fraction_tracks_message_id_range(fake_client, tmp_path, capsys):
@@ -303,6 +308,9 @@ def test_scrape_reactors(fake_client, tmp_path):
     assert by_id.loc[777, "Date"] == "2024-06-05 00:00:00"
     assert by_id.loc[_CHANNEL_PEER_ID, "Reactor Username"] == "[channel]"
     assert by_id.loc[_CHANNEL_PEER_ID, "Reactor Name"] == "Disc Grp"
+    assert str(r["Reactor Access Hash"].dtype) == "Int64"
+    assert by_id.loc[777, "Reactor Access Hash"] == _BOB_HASH
+    assert pd.isna(by_id.loc[_CHANNEL_PEER_ID, "Reactor Access Hash"])
 
     people = pd.read_parquet(_out(tmp_path, "participants")).set_index("ID")
     assert people.loc[777, "Reactions"] >= 1             # reactor folded into participants
@@ -778,6 +786,70 @@ def test_run_dedups_reactor_rows(monkeypatch, tmp_path):
     assert sorted(r["Message ID"]) == [1, 1, 2]
 
 
+def test_collect_reactors_drops_min_user_hash(monkeypatch):
+    monkeypatch.setattr(scrape, "REACTOR_CALL_DELAY", 0)
+    res = types.SimpleNamespace(
+        reactions=[types.SimpleNamespace(peer_id=PeerUser(uid), date=None,
+                                         reaction=ReactionEmoji(emoticon="👍"))
+                   for uid in (777, 555)],
+        users=[User(id=777, access_hash=_BOB_HASH, username="bob"),
+               User(id=555, access_hash=123, min=True, username="minnie")],  # hash unusable
+        chats=[], next_offset=None, count=2,
+    )
+
+    async def client(request):
+        return res
+
+    ref = scrape._channel_ref("https://t.me/SomeChannel/")
+    msg = _msg(20, datetime(2024, 6, 5, tzinfo=timezone.utc), "body")
+    rows = asyncio.run(scrape._collect_reactors(client, ref.arg, ref, 20, msg, "post"))
+    hashes = {r["Reactor ID"]: r["Reactor Access Hash"] for r in rows}
+    assert hashes == {777: _BOB_HASH, 555: None}
+
+
+def test_collect_reactors_user_and_channel_with_same_id(monkeypatch):
+    monkeypatch.setattr(scrape, "REACTOR_CALL_DELAY", 0)
+    res = types.SimpleNamespace(
+        reactions=[types.SimpleNamespace(peer_id=peer, date=None,
+                                         reaction=ReactionEmoji(emoticon="👍"))
+                   for peer in (PeerUser(5), PeerChannel(5))],
+        users=[User(id=5, access_hash=_BOB_HASH, username="bob", first_name="Bob")],
+        chats=[Channel(id=5, title="Chan", photo=None, date=None)],
+        next_offset=None, count=2,
+    )
+
+    async def client(request):
+        return res
+
+    ref = scrape._channel_ref("https://t.me/SomeChannel/")
+    msg = _msg(20, datetime(2024, 6, 5, tzinfo=timezone.utc), "body")
+    rows = asyncio.run(scrape._collect_reactors(client, ref.arg, ref, 20, msg, "post"))
+    user, chan = rows
+    assert (user["Reactor Username"], user["Reactor Name"], user["Reactor Access Hash"]) == (
+        "bob", "Bob", _BOB_HASH)                        # not overwritten by channel 5
+    assert chan["Reactor Name"] == "Chan"
+
+
+def test_consolidate_reactors_mixes_shards_from_before_access_hash(tmp_path):
+    d = tmp_path / "ckpt"
+    d.mkdir()
+    # a new shard: the hash column sits right after Reactor Username, as _collect_reactors writes it
+    new = pd.DataFrame([_reactor_row(1, 7, "🔥")])
+    new.insert(new.columns.get_loc("Reactor Username") + 1, "Reactor Access Hash",
+               pd.array([_BOB_HASH], dtype="Int64"))
+    pd.DataFrame([_reactor_row(2, 8, "👍")]).to_parquet(d / "reactors_part_00000.parquet")  # old
+    new.to_parquet(d / "reactors_part_00001.parquet")
+    pd.DataFrame([_reactor_row(3, 9, "❤")]).to_parquet(d / "reactors_part_00002.parquet")  # old
+
+    dest, n = scrape._consolidate_reactors(d, tmp_path / "r.parquet")
+    r = pd.read_parquet(dest).set_index("Message ID")
+    assert n == 3
+    assert r.loc[1, "Reactor Access Hash"] == _BOB_HASH
+    assert r.loc[[2, 3], "Reactor Access Hash"].isna().all()
+    # excel path: pandas concat of the same shards keeps the exact Int64 column
+    assert str(scrape._read_shards(d, "reactors")["Reactor Access Hash"].dtype) == "Int64"
+
+
 def test_consolidate_reactors_streaming(tmp_path):
     d = tmp_path / "ckpt"
     d.mkdir()
@@ -980,3 +1052,26 @@ def test_ctrl_c_during_channel_pause_keeps_advanced_cursor(fake_client, tmp_path
         scrape.run(Credentials(1, "h"), _params(tmp_path, channels=["@a", "@b"]))
     meta = json.loads((_ckpt(tmp_path) / "resume.json").read_text())
     assert (meta["channel_index"], meta["last_id"]) == (1, 0)
+
+
+def test_failed_channel_is_listed_at_the_end(monkeypatch, tmp_path, capsys):
+    class BadChannelClient(FakeClient):
+        def iter_messages(self, channel, reply_to=None, **k):
+            if channel == "@bad" and reply_to is None:
+                async def gen():
+                    raise RuntimeError("boom")
+                    yield
+                return gen()
+            return super().iter_messages(channel, reply_to=reply_to, **k)
+
+    async def _nosleep(*a, **k):
+        return None
+
+    monkeypatch.setattr(scrape, "TelegramClient", BadChannelClient)
+    monkeypatch.setattr(scrape.asyncio, "sleep", _nosleep)
+    path = scrape.run(Credentials(1, "h"), _params(tmp_path, channels=["@bad", "@a"],
+                                                   with_participants=False))
+
+    tail = capsys.readouterr().out.split("Concluded")[1]
+    assert "1 channel(s) stopped on an error" in tail and "@bad: boom" in tail
+    assert set(pd.read_parquet(path)["Group"]) == {"@a"}  # the run still finished
